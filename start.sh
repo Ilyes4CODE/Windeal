@@ -1,0 +1,1 @@
+gunicorn Windeal.wsgi:application
