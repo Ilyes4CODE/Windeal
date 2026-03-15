@@ -27,7 +27,7 @@ from .serializers import (
 )
 from admin_app.models import SubscriptionPlan, Payment, Category
 from core.messages import get_message
-from core.decorators import _authenticate_request
+from core.decorators import _authenticate_request, admin_required
 
 _LANG_HEADER = OpenApiParameter(
     name="Accept-Language",
@@ -35,11 +35,6 @@ _LANG_HEADER = OpenApiParameter(
     description="Response language. Supported: `en` (default), `ar`, `fr`.",
     required=False,
     type=OpenApiTypes.STR,
-    examples=[
-        OpenApiExample("English", value="en"),
-        OpenApiExample("Arabic", value="ar"),
-        OpenApiExample("French", value="fr"),
-    ],
 )
 
 _AUTH_HEADER = OpenApiParameter(
@@ -127,45 +122,28 @@ def _check_subscription_expiry(user):
             user.save(update_fields=["subscription_status"])
 
 
-# ─── Registration ─────────────────────────────────────────────────────────────
+# ─── Client Registration ──────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Auth — Client"],
     summary="Register a new client account",
     description=(
-        "Creates a new client user account. The account is created with `is_verified=false`. "
-        "Your SMS/OTP provider should handle phone verification on the client side. "
-        "Once the user has verified their phone, call `POST /api/auth/verify/` to activate the account.\n\n"
+        "Creates a new client user account with `is_verified=false`. "
+        "Call `POST /api/auth/verify/` once your SMS provider confirms the user.\n\n"
         "**No authentication required.**"
     ),
     request=ClientRegisterSerializer,
     parameters=[_LANG_HEADER],
     responses={
-        201: OpenApiResponse(
-            description="Account created successfully. Account is inactive until verified.",
-            examples=[OpenApiExample(
-                "Success",
-                value={
-                    "success": True,
-                    "message": "Account created successfully. Please verify OTP.",
-                    "data": {"phone": "+213555123456", "is_verified": False},
-                },
-            )],
-        ),
-        400: OpenApiResponse(description="Validation error — phone already registered or invalid format."),
+        201: OpenApiResponse(description="Account created. Inactive until verified."),
+        400: OpenApiResponse(description="Validation error."),
     },
     examples=[
         OpenApiExample(
-            "Client registration body",
+            "Client registration",
             request_only=True,
-            value={
-                "phone": "+213555123456",
-                "password": "securePass123",
-                "first_name": "Yacine",
-                "last_name": "Boudiaf",
-                "city": "Algiers",
-                "date_of_birth": "1995-06-15",
-            },
+            value={"phone": "+213555123456", "password": "securePass123",
+                   "first_name": "Yacine", "last_name": "Boudiaf", "city": "Algiers"},
         )
     ],
 )
@@ -182,8 +160,7 @@ def register_client(request):
 
     with transaction.atomic():
         user = User.objects.create_user(
-            phone=phone,
-            role="client",
+            phone=phone, role="client",
             password=data["password"],
             city=data.get("city", ""),
             is_verified=False,
@@ -197,55 +174,34 @@ def register_client(request):
 
     return _ok(
         data={"phone": phone, "is_verified": False},
-        msg_key="user_created",
-        lang=lang,
+        msg_key="user_created", lang=lang,
         http_status=status.HTTP_201_CREATED,
     )
 
+
+# ─── Business Registration ────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Auth — Business"],
     summary="Register a new business account",
     description=(
-        "Creates a new business user account. The account is created with `is_verified=false`. "
-        "Your SMS/OTP provider should handle phone verification on the client side. "
-        "Once the user has verified their phone, call `POST /api/auth/verify/` to activate the account.\n\n"
-        "The `latitude` and `longitude` fields are used to place the business pin on Google Maps in the mobile app. "
-        "Both must be provided together or omitted together.\n\n"
+        "Creates a new business account with `is_verified=false`. "
+        "`latitude` and `longitude` are used for Google Maps pin — must be provided together.\n\n"
         "**No authentication required.**"
     ),
     request=BusinessRegisterSerializer,
     parameters=[_LANG_HEADER],
     responses={
-        201: OpenApiResponse(
-            description="Business account created. Inactive until verified.",
-            examples=[OpenApiExample(
-                "Success",
-                value={
-                    "success": True,
-                    "message": "Account created successfully. Please verify OTP.",
-                    "data": {"phone": "+213555000111", "is_verified": False},
-                },
-            )],
-        ),
-        400: OpenApiResponse(description="Validation error — phone exists, coordinate out of range, etc."),
+        201: OpenApiResponse(description="Business account created."),
+        400: OpenApiResponse(description="Validation error."),
     },
     examples=[
         OpenApiExample(
-            "Business registration body",
+            "Business registration",
             request_only=True,
-            value={
-                "phone": "+213555000111",
-                "password": "securePass456",
-                "business_name": "Café El Djazair",
-                "description": "Traditional Algerian coffee house.",
-                "category_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-                "city": "Algiers",
-                "address": "12 Rue Didouche Mourad, Algiers",
-                "website": "https://caffeldjazair.dz",
-                "latitude": "36.737232",
-                "longitude": "3.086472",
-            },
+            value={"phone": "+213555000111", "password": "securePass456",
+                   "business_name": "Café El Djazair", "city": "Algiers",
+                   "latitude": "36.737232", "longitude": "3.086472"},
         )
     ],
 )
@@ -269,8 +225,7 @@ def register_business(request):
 
     with transaction.atomic():
         user = User.objects.create_user(
-            phone=phone,
-            role="business",
+            phone=phone, role="business",
             password=data["password"],
             city=data.get("city", ""),
             is_verified=False,
@@ -288,69 +243,118 @@ def register_business(request):
 
     return _ok(
         data={"phone": phone, "is_verified": False},
+        msg_key="user_created", lang=lang,
+        http_status=status.HTTP_201_CREATED,
+    )
+
+
+# ─── Admin Registration ───────────────────────────────────────────────────────
+
+@extend_schema(
+    tags=["Auth — Admin"],
+    summary="Create a new admin account",
+    description=(
+        "Creates a new admin user. **Only callable by an existing authenticated admin.**\n\n"
+        "The new account is created with `role=admin`, `is_verified=true`, and `is_active=true` immediately — "
+        "no OTP or verification step is needed.\n\n"
+        "**Requires:** `Authorization: Bearer <admin_access_token>`"
+    ),
+    request=inline_serializer(
+        name="AdminRegisterRequest",
+        fields={
+            "phone":      drf_serializers.CharField(help_text="Phone number of the new admin."),
+            "password":   drf_serializers.CharField(help_text="Password (min 6 characters)."),
+            "first_name": drf_serializers.CharField(help_text="First name."),
+            "last_name":  drf_serializers.CharField(required=False, help_text="Last name (optional)."),
+        },
+    ),
+    parameters=[_LANG_HEADER, _AUTH_HEADER],
+    responses={
+        201: OpenApiResponse(description="Admin account created successfully."),
+        400: OpenApiResponse(description="Phone already registered or validation error."),
+        401: OpenApiResponse(description="Not authenticated."),
+        403: OpenApiResponse(description="Only admins can create other admins."),
+    },
+    examples=[
+        OpenApiExample(
+            "Create admin",
+            request_only=True,
+            value={"phone": "+213555999000", "password": "adminPass123",
+                   "first_name": "Riad", "last_name": "Belkacem"},
+        )
+    ],
+)
+@api_view(["POST"])
+@parser_classes([JSONParser])
+@admin_required
+def register_admin(request):
+    lang = _lang(request)
+
+    phone      = request.data.get("phone", "").strip()
+    password   = request.data.get("password", "")
+    first_name = request.data.get("first_name", "").strip()
+    last_name  = request.data.get("last_name", "Admin").strip()
+
+    if not phone or not password or not first_name:
+        return _err("validation_error", lang,
+                    errors={"detail": "phone, password, and first_name are required."})
+
+    if not phone.lstrip("+").isdigit():
+        return _err("validation_error", lang,
+                    errors={"phone": "Phone must contain digits only."})
+
+    if len(password) < 6:
+        return _err("validation_error", lang,
+                    errors={"password": "Password must be at least 6 characters."})
+
+    if User.objects.filter(phone=phone).exists():
+        return _err("phone_exists", lang)
+
+    with transaction.atomic():
+        user = User.objects.create_user(
+            phone=phone,
+            role="admin",
+            password=password,
+            is_verified=True,
+            is_active=True,
+            is_staff=True,
+        )
+        ClientProfile.objects.create(
+            user=user,
+            first_name=first_name,
+            last_name=last_name,
+        )
+
+    return _ok(
+        data={
+            "id": str(user.id),
+            "phone": user.phone,
+            "role": user.role,
+            "is_verified": user.is_verified,
+        },
         msg_key="user_created",
         lang=lang,
         http_status=status.HTTP_201_CREATED,
     )
 
 
-# ─── Verification ─────────────────────────────────────────────────────────────
+# ─── Verify Account ───────────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Auth — Common"],
     summary="Verify account after phone confirmation",
     description=(
-        "This endpoint is called **by the app developer** once their external SMS/OTP provider "
-        "confirms the user has successfully verified their phone number.\n\n"
-        "The backend does not handle OTP logic — that is entirely managed on your side "
-        "(e.g. Firebase, Twilio, or any SMS gateway). Once you confirm verification on your end, "
-        "call this endpoint with the user's phone number and the backend will set `is_verified=true`, "
-        "activating the account and returning full user data with JWT tokens.\n\n"
-        "**Errors:**\n"
-        "- `400` if the phone number is not found\n"
-        "- `400` if the account is already verified\n\n"
+        "Called by the app developer once their external SMS provider confirms verification. "
+        "Sets `is_verified=true` and returns JWT tokens.\n\n"
         "**No authentication required.**"
     ),
     request=VerifyAccountSerializer,
     parameters=[_LANG_HEADER],
     responses={
-        200: OpenApiResponse(
-            description="Account marked as verified. Full user object with JWT tokens returned.",
-            examples=[OpenApiExample(
-                "Success",
-                value={
-                    "success": True,
-                    "message": "OTP verified successfully. Account is now active.",
-                    "data": {
-                        "tokens": {"access": "eyJ...", "refresh": "eyJ..."},
-                        "id": "uuid",
-                        "phone": "+213555123456",
-                        "email": None,
-                        "role": "client",
-                        "city": "Algiers",
-                        "profile_picture": None,
-                        "subscription_status": "FREE",
-                        "subscription_end": None,
-                        "is_verified": True,
-                        "created_at": "2026-01-01T10:00:00Z",
-                        "profile": {
-                            "first_name": "Yacine",
-                            "last_name": "Boudiaf",
-                            "date_of_birth": "1995-06-15",
-                        },
-                    },
-                },
-            )],
-        ),
-        400: OpenApiResponse(description="Phone not found, or account already verified."),
+        200: OpenApiResponse(description="Account verified. Full user + tokens returned."),
+        400: OpenApiResponse(description="Phone not found or already verified."),
     },
-    examples=[
-        OpenApiExample(
-            "Verify account body",
-            request_only=True,
-            value={"phone": "+213555123456"},
-        )
-    ],
+    examples=[OpenApiExample("Verify", request_only=True, value={"phone": "+213555123456"})],
 )
 @api_view(["POST"])
 def verify_account(request):
@@ -367,41 +371,26 @@ def verify_account(request):
     return _ok(data=_build_user_data(user, request), msg_key="otp_verified", lang=lang)
 
 
-# ─── Auth ─────────────────────────────────────────────────────────────────────
+# ─── Login ────────────────────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Auth — Common"],
     summary="Login — client, business, or admin",
     description=(
-        "Authenticates any user and returns full user data with JWT tokens. "
-        "The `identifier` field accepts either a **phone number** or an **email address**. "
-        "Subscription expiry is automatically checked on every login.\n\n"
+        "Authenticates any user. `identifier` accepts phone or email. "
+        "Returns full user data with JWT tokens and `role` field for frontend routing.\n\n"
         "**No authentication required.**"
     ),
     request=LoginSerializer,
     parameters=[_LANG_HEADER],
     responses={
-        200: OpenApiResponse(
-            description="Login successful. Full user data + JWT tokens returned.",
-            examples=[OpenApiExample(
-                "Success",
-                value={
-                    "success": True,
-                    "message": "Login successful.",
-                    "data": {
-                        "tokens": {"access": "eyJ...", "refresh": "eyJ..."},
-                        "id": "uuid", "phone": "+213555123456",
-                        "role": "client", "subscription_status": "ACTIVE",
-                    },
-                },
-            )],
-        ),
-        401: OpenApiResponse(description="Wrong phone/email or password."),
+        200: OpenApiResponse(description="Login successful."),
+        401: OpenApiResponse(description="Wrong credentials."),
         403: OpenApiResponse(description="Account not verified or inactive."),
     },
     examples=[
-        OpenApiExample("Login with phone", request_only=True, value={"identifier": "+213555123456", "password": "securePass123"}),
-        OpenApiExample("Login with email", request_only=True, value={"identifier": "user@example.com", "password": "securePass123"}),
+        OpenApiExample("Phone login",  request_only=True, value={"identifier": "+213555123456", "password": "pass"}),
+        OpenApiExample("Email login",  request_only=True, value={"identifier": "user@example.com", "password": "pass"}),
     ],
 )
 @api_view(["POST"])
@@ -412,7 +401,7 @@ def login(request):
         return _err("validation_error", lang, errors=serializer.errors)
 
     identifier = serializer.validated_data["identifier"]
-    password = serializer.validated_data["password"]
+    password   = serializer.validated_data["password"]
 
     user = None
     lookup = {"email": identifier} if "@" in identifier else {"phone": identifier}
@@ -434,23 +423,18 @@ def login(request):
     return _ok(data=_build_user_data(user, request), msg_key="login_success", lang=lang)
 
 
+# ─── Logout ───────────────────────────────────────────────────────────────────
+
 @extend_schema(
     tags=["Auth — Common"],
     summary="Logout — invalidate refresh token",
-    description=(
-        "Blacklists the provided refresh token so it can no longer be used. "
-        "Send the refresh token in the request body.\n\n"
-        "**No authentication required.**"
-    ),
+    description="Blacklists the provided refresh token.\n\n**No authentication required.**",
     request=inline_serializer(
         name="LogoutRequest",
-        fields={"refresh": drf_serializers.CharField(help_text="The refresh token received at login.")},
+        fields={"refresh": drf_serializers.CharField(help_text="The refresh token.")},
     ),
     parameters=[_LANG_HEADER],
-    responses={200: OpenApiResponse(description="Logged out successfully.")},
-    examples=[
-        OpenApiExample("Logout body", request_only=True, value={"refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."}),
-    ],
+    responses={200: OpenApiResponse(description="Logged out.")},
 )
 @api_view(["POST"])
 def logout(request):
@@ -464,18 +448,16 @@ def logout(request):
     return _ok(msg_key="logout_success", lang=lang)
 
 
+# ─── Profile ──────────────────────────────────────────────────────────────────
+
 @extend_schema(
     tags=["Auth — Common"],
     summary="Get current user profile",
-    description=(
-        "Returns the full profile of the currently authenticated user including role-specific data. "
-        "For businesses, the response includes `latitude` and `longitude` for Google Maps.\n\n"
-        "**Requires:** `Authorization: Bearer <access_token>`"
-    ),
+    description="Returns full profile of the authenticated user.\n\n**Requires:** `Authorization: Bearer <token>`",
     parameters=[_LANG_HEADER, _AUTH_HEADER],
     responses={
-        200: OpenApiResponse(description="Profile returned successfully."),
-        401: OpenApiResponse(description="Missing or invalid token."),
+        200: OpenApiResponse(description="Profile returned."),
+        401: OpenApiResponse(description="Not authenticated."),
     },
 )
 @api_view(["GET"])
@@ -492,41 +474,34 @@ def get_profile(request):
     tags=["Auth — Common"],
     summary="Update current user profile",
     description=(
-        "Partially updates the authenticated user's profile. Only send the fields you want to change.\n\n"
-        "**Client fields:** `email`, `city`, `profile_picture`, `first_name`, `last_name`, `date_of_birth`\n\n"
-        "**Business fields:** `email`, `city`, `profile_picture`, `business_name`, `description`, "
-        "`category_id`, `address`, `website`, `latitude`, `longitude`\n\n"
-        "`latitude` and `longitude` must always be provided **together**.\n\n"
-        "**Requires:** `Authorization: Bearer <access_token>`"
+        "Partial update. Client fields: `email`, `city`, `profile_picture`, `first_name`, `last_name`, `date_of_birth`. "
+        "Business fields: above + `business_name`, `description`, `category_id`, `address`, `website`, `latitude`, `longitude`.\n\n"
+        "**Requires:** `Authorization: Bearer <token>`"
     ),
     request=inline_serializer(
         name="UpdateProfileRequest",
         fields={
-            "email": drf_serializers.EmailField(required=False),
-            "city": drf_serializers.CharField(required=False),
+            "email":         drf_serializers.EmailField(required=False),
+            "city":          drf_serializers.CharField(required=False),
             "profile_picture": drf_serializers.ImageField(required=False),
-            "first_name": drf_serializers.CharField(required=False, help_text="[Client only]"),
-            "last_name": drf_serializers.CharField(required=False, help_text="[Client only]"),
-            "date_of_birth": drf_serializers.DateField(required=False, help_text="[Client only] YYYY-MM-DD"),
+            "first_name":    drf_serializers.CharField(required=False, help_text="[Client only]"),
+            "last_name":     drf_serializers.CharField(required=False, help_text="[Client only]"),
+            "date_of_birth": drf_serializers.DateField(required=False, help_text="[Client only]"),
             "business_name": drf_serializers.CharField(required=False, help_text="[Business only]"),
-            "description": drf_serializers.CharField(required=False, help_text="[Business only]"),
-            "category_id": drf_serializers.UUIDField(required=False, help_text="[Business only]"),
-            "address": drf_serializers.CharField(required=False, help_text="[Business only]"),
-            "website": drf_serializers.URLField(required=False, help_text="[Business only]"),
-            "latitude": drf_serializers.DecimalField(max_digits=9, decimal_places=6, required=False, help_text="[Business only] -90 to 90. Must come with longitude."),
-            "longitude": drf_serializers.DecimalField(max_digits=9, decimal_places=6, required=False, help_text="[Business only] -180 to 180. Must come with latitude."),
+            "description":   drf_serializers.CharField(required=False, help_text="[Business only]"),
+            "category_id":   drf_serializers.UUIDField(required=False, help_text="[Business only]"),
+            "address":       drf_serializers.CharField(required=False, help_text="[Business only]"),
+            "website":       drf_serializers.URLField(required=False, help_text="[Business only]"),
+            "latitude":      drf_serializers.DecimalField(max_digits=9, decimal_places=6, required=False, help_text="[Business only]"),
+            "longitude":     drf_serializers.DecimalField(max_digits=9, decimal_places=6, required=False, help_text="[Business only]"),
         },
     ),
     parameters=[_LANG_HEADER, _AUTH_HEADER],
     responses={
-        200: OpenApiResponse(description="Profile updated. Full updated user object returned."),
+        200: OpenApiResponse(description="Profile updated."),
         400: OpenApiResponse(description="Validation error."),
-        401: OpenApiResponse(description="Missing or invalid token."),
+        401: OpenApiResponse(description="Not authenticated."),
     },
-    examples=[
-        OpenApiExample("Update client name", request_only=True, value={"first_name": "Karim", "city": "Oran"}),
-        OpenApiExample("Update business location", request_only=True, value={"latitude": "35.691544", "longitude": "-0.641449"}),
-    ],
 )
 @api_view(["PATCH"])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
@@ -560,27 +535,18 @@ def update_profile(request):
 
     if user.role == "client":
         p = user.client_profile
-        if "first_name" in data:
-            p.first_name = data["first_name"]
-        if "last_name" in data:
-            p.last_name = data["last_name"]
-        if "date_of_birth" in data:
-            p.date_of_birth = data["date_of_birth"]
+        if "first_name" in data: p.first_name = data["first_name"]
+        if "last_name"  in data: p.last_name  = data["last_name"]
+        if "date_of_birth" in data: p.date_of_birth = data["date_of_birth"]
         p.save()
     elif user.role == "business":
         bp = user.business_profile
-        if "business_name" in data:
-            bp.business_name = data["business_name"]
-        if "description" in data:
-            bp.description = data["description"]
-        if "address" in data:
-            bp.address = data["address"]
-        if "website" in data:
-            bp.website = data["website"]
-        if "latitude" in data:
-            bp.latitude = data["latitude"]
-        if "longitude" in data:
-            bp.longitude = data["longitude"]
+        if "business_name" in data: bp.business_name = data["business_name"]
+        if "description"   in data: bp.description   = data["description"]
+        if "address"       in data: bp.address        = data["address"]
+        if "website"       in data: bp.website        = data["website"]
+        if "latitude"      in data: bp.latitude       = data["latitude"]
+        if "longitude"     in data: bp.longitude      = data["longitude"]
         if data.get("category_id"):
             try:
                 bp.category = Category.objects.get(id=data["category_id"], is_active=True)
@@ -591,33 +557,24 @@ def update_profile(request):
     return _ok(data=_build_user_data(user, request), msg_key="profile_updated", lang=lang)
 
 
-# ─── Payment ──────────────────────────────────────────────────────────────────
+# ─── Payment Upload ───────────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Auth — Payment"],
     summary="Upload subscription payment receipt",
     description=(
-        "Uploads a subscription payment receipt (image or PDF) for admin review. "
-        "After uploading, the user's `subscription_status` is set to `PENDING`.\n\n"
-        "**Receipt rules:** JPEG / PNG / PDF, max 5MB\n\n"
+        "Upload a JPEG/PNG/PDF receipt (max 5MB). Sets `subscription_status=PENDING`.\n\n"
         "**Request format:** `multipart/form-data`\n\n"
-        "**Requires:** `Authorization: Bearer <access_token>` (client or business only)"
+        "**Requires:** `Authorization: Bearer <token>` (client or business)"
     ),
     request=UploadPaymentSerializer,
     parameters=[_LANG_HEADER, _AUTH_HEADER],
     responses={
-        201: OpenApiResponse(description="Receipt uploaded. Awaiting admin approval."),
-        400: OpenApiResponse(description="Invalid plan, wrong file type/size, or validation failure."),
-        401: OpenApiResponse(description="Missing or invalid token."),
-        403: OpenApiResponse(description="Admin accounts cannot upload payments."),
+        201: OpenApiResponse(description="Receipt uploaded."),
+        400: OpenApiResponse(description="Invalid plan or file error."),
+        401: OpenApiResponse(description="Not authenticated."),
+        403: OpenApiResponse(description="Admins cannot upload payments."),
     },
-    examples=[
-        OpenApiExample(
-            "Payment upload (multipart)",
-            request_only=True,
-            value={"plan_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6", "amount": "500.00", "receipt": "<binary file>"},
-        )
-    ],
 )
 @api_view(["POST"])
 @parser_classes([MultiPartParser, FormParser])
@@ -644,8 +601,7 @@ def upload_payment(request):
         return _err("invalid_plan", lang)
 
     payment = Payment.objects.create(
-        user=user,
-        plan=plan,
+        user=user, plan=plan,
         amount=data["amount"],
         receipt=data["receipt"],
         status="PENDING",
@@ -660,32 +616,23 @@ def upload_payment(request):
             "plan": plan.name,
             "amount": str(payment.amount),
         },
-        msg_key="payment_uploaded",
-        lang=lang,
+        msg_key="payment_uploaded", lang=lang,
         http_status=status.HTTP_201_CREATED,
     )
 
+
+# ─── Subscription Status ──────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Auth — Payment"],
     summary="Get subscription status",
     description=(
-        "Returns the current subscription status of the authenticated user. "
-        "Expiry is automatically checked — if past `subscription_end`, status is set to `EXPIRED`.\n\n"
+        "Returns current subscription status. Expiry auto-checked on call.\n\n"
         "**States:** `FREE` · `PENDING` · `ACTIVE` · `EXPIRED`\n\n"
-        "**Requires:** `Authorization: Bearer <access_token>`"
+        "**Requires:** `Authorization: Bearer <token>`"
     ),
     parameters=[_LANG_HEADER, _AUTH_HEADER],
-    responses={
-        200: OpenApiResponse(
-            description="Subscription info returned.",
-            examples=[OpenApiExample(
-                "Active",
-                value={"success": True, "data": {"subscription_status": "ACTIVE", "subscription_end": "2026-05-01T00:00:00Z", "plan": "Monthly Plan"}},
-            )],
-        ),
-        401: OpenApiResponse(description="Missing or invalid token."),
-    },
+    responses={200: OpenApiResponse(description="Subscription info returned.")},
 )
 @api_view(["GET"])
 def get_subscription_status(request):
@@ -700,6 +647,5 @@ def get_subscription_status(request):
             "subscription_end": user.subscription_end,
             "plan": user.current_plan.name if user.current_plan else None,
         },
-        msg_key="subscription_status_fetched",
-        lang=lang,
+        msg_key="subscription_status_fetched", lang=lang,
     )
