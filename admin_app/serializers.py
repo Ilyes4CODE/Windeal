@@ -181,6 +181,7 @@ class AdminUserListSerializer(serializers.ModelSerializer):
             "current_plan_name",
             "is_verified",
             "is_active",
+            "is_banned",
             "created_at",
             "client_profile",
             "business_profile",
@@ -191,9 +192,10 @@ class AdminUserListSerializer(serializers.ModelSerializer):
         if obj.role == "client" and hasattr(obj, "client_profile"):
             p = obj.client_profile
             return {
-                "first_name": p.first_name,
-                "last_name": p.last_name,
-                "date_of_birth": p.date_of_birth,
+                "full_name": p.full_name,
+                "email":     p.email,
+                "wilaya":    p.wilaya,
+                "school":    p.school,
             }
         return None
 

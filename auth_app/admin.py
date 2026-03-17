@@ -9,18 +9,19 @@ from .models import User, ClientProfile, BusinessProfile
 # ─── Inlines ──────────────────────────────────────────────────────────────────
 
 class ClientProfileInline(admin.StackedInline):
-    model   = ClientProfile
-    extra   = 0
+    model        = ClientProfile
+    extra        = 0
     verbose_name = "Client Profile"
-    fields  = ("first_name", "last_name", "date_of_birth")
-    can_delete = False
+    # Updated: full_name, email, wilaya, school (date_of_birth removed)
+    fields       = ("full_name", "email", "wilaya", "school")
+    can_delete   = False
 
 
 class BusinessProfileInline(admin.StackedInline):
-    model   = BusinessProfile
-    extra   = 0
+    model        = BusinessProfile
+    extra        = 0
     verbose_name = "Business Profile"
-    fields  = (
+    fields       = (
         "business_name", "description", "category",
         "address", "website",
         "latitude", "longitude",
@@ -33,15 +34,15 @@ class BusinessProfileInline(admin.StackedInline):
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
-    ordering         = ("-created_at",)
-    list_display     = (
+    ordering      = ("-created_at",)
+    list_display  = (
         "phone", "email", "role_badge", "city",
-        "verified_icon", "active_icon",
+        "verified_icon", "active_icon", "banned_icon",
         "subscription_badge", "subscription_end",
         "created_at",
     )
-    list_filter      = ("role", "is_verified", "is_active", "subscription_status")
-    search_fields    = ("phone", "email", "city")
+    list_filter   = ("role", "is_verified", "is_active", "is_banned", "subscription_status")
+    search_fields = ("phone", "email", "city")
     readonly_fields  = ("id", "created_at", "updated_at", "last_login")
     list_per_page    = 25
     date_hierarchy   = "created_at"
@@ -51,7 +52,7 @@ class UserAdmin(BaseUserAdmin):
             "fields": ("id", "phone", "email", "password"),
         }),
         ("Role & Status", {
-            "fields": ("role", "is_verified", "is_active", "is_staff", "is_superuser"),
+            "fields": ("role", "is_verified", "is_active", "is_banned", "is_staff", "is_superuser"),
         }),
         ("Profile", {
             "fields": ("profile_picture", "city"),
@@ -106,7 +107,7 @@ class UserAdmin(BaseUserAdmin):
         return format_html(
             '<span style="color:{}">&#{}</span>',
             "#00e676" if obj.is_verified else "#ef5350",
-            "10004" if obj.is_verified else "10008",
+            "10004"   if obj.is_verified else "10008",
         )
 
     @admin.display(description="Active", boolean=False)
@@ -114,8 +115,17 @@ class UserAdmin(BaseUserAdmin):
         return format_html(
             '<span style="color:{}">&#{}</span>',
             "#00e676" if obj.is_active else "#ef5350",
-            "10004" if obj.is_active else "10008",
+            "10004"   if obj.is_active else "10008",
         )
+
+    @admin.display(description="Banned", boolean=False)
+    def banned_icon(self, obj):
+        if obj.is_banned:
+            return format_html(
+                '<span style="background:#ef5350;color:#fff;padding:2px 8px;'
+                'border-radius:4px;font-size:11px;font-weight:600">BANNED</span>'
+            )
+        return format_html('<span style="color:#4a6080;font-size:11px">—</span>')
 
     @admin.display(description="Subscription")
     def subscription_badge(self, obj):
@@ -132,9 +142,14 @@ class UserAdmin(BaseUserAdmin):
             bg, fg, obj.subscription_status
         )
 
-    # ── Custom actions ───────────────────────────────────────────────────────
+    # ── Bulk actions ─────────────────────────────────────────────────────────
 
-    actions = ["mark_verified", "mark_unverified", "activate_users", "deactivate_users", "reset_subscription"]
+    actions = [
+        "mark_verified", "mark_unverified",
+        "activate_users", "deactivate_users",
+        "ban_users", "unban_users",
+        "reset_subscription",
+    ]
 
     @admin.action(description="✅ Mark selected users as verified")
     def mark_verified(self, request, queryset):
@@ -156,6 +171,16 @@ class UserAdmin(BaseUserAdmin):
         updated = queryset.exclude(role="admin").update(is_active=False)
         self.message_user(request, f"{updated} user(s) deactivated.")
 
+    @admin.action(description="🚫 Ban selected users")
+    def ban_users(self, request, queryset):
+        updated = queryset.exclude(role="admin").update(is_banned=True)
+        self.message_user(request, f"{updated} user(s) banned.")
+
+    @admin.action(description="🔓 Unban selected users")
+    def unban_users(self, request, queryset):
+        updated = queryset.update(is_banned=False)
+        self.message_user(request, f"{updated} user(s) unbanned.")
+
     @admin.action(description="🔄 Reset subscription to FREE")
     def reset_subscription(self, request, queryset):
         updated = queryset.update(
@@ -170,13 +195,17 @@ class UserAdmin(BaseUserAdmin):
 
 @admin.register(ClientProfile)
 class ClientProfileAdmin(admin.ModelAdmin):
-    list_display  = ("full_name", "user_phone", "date_of_birth")
-    search_fields = ("first_name", "last_name", "user__phone")
+    # Updated: full_name, wilaya, school — no date_of_birth, no first_name/last_name
+    list_display  = ("full_name", "user_phone", "wilaya", "school")
+    search_fields = ("full_name", "wilaya", "school", "user__phone", "email")
+    list_filter   = ("wilaya",)
     list_per_page = 25
 
-    @admin.display(description="Full Name")
-    def full_name(self, obj):
-        return f"{obj.first_name} {obj.last_name}"
+    fieldsets = (
+        ("Profile", {
+            "fields": ("user", "full_name", "email", "wilaya", "school"),
+        }),
+    )
 
     @admin.display(description="Phone")
     def user_phone(self, obj):
@@ -194,7 +223,7 @@ class BusinessProfileAdmin(admin.ModelAdmin):
     list_filter   = ("is_active", "category")
     search_fields = ("business_name", "user__phone", "address")
     readonly_fields = ("map_preview",)
-    list_per_page = 25
+    list_per_page   = 25
 
     fieldsets = (
         ("Business Info", {

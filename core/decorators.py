@@ -31,6 +31,15 @@ def _deny(message_key, lang, http_status):
     )
 
 
+def _check_banned(user, lang):
+    """Returns a Response if the user is banned, otherwise None."""
+    if getattr(user, "is_banned", False):
+        return _deny("banned", lang, status.HTTP_403_FORBIDDEN)
+    return None
+
+
+# ── Decorators ────────────────────────────────────────────────────────────────
+
 def admin_required(view_func):
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):
@@ -40,6 +49,7 @@ def admin_required(view_func):
             return _deny("unauthorized", lang, status.HTTP_401_UNAUTHORIZED)
         if user.role != "admin":
             return _deny("admin_only", lang, status.HTTP_403_FORBIDDEN)
+        # Admins cannot be banned (safety guard — skip banned check for admins)
         request.user = user
         return view_func(request, *args, **kwargs)
     return wrapper
@@ -54,6 +64,9 @@ def business_required(view_func):
             return _deny("unauthorized", lang, status.HTTP_401_UNAUTHORIZED)
         if user.role != "business":
             return _deny("business_only", lang, status.HTTP_403_FORBIDDEN)
+        banned = _check_banned(user, lang)
+        if banned:
+            return banned
         request.user = user
         return view_func(request, *args, **kwargs)
     return wrapper
@@ -68,18 +81,26 @@ def client_required(view_func):
             return _deny("unauthorized", lang, status.HTTP_401_UNAUTHORIZED)
         if user.role != "client":
             return _deny("client_only", lang, status.HTTP_403_FORBIDDEN)
+        banned = _check_banned(user, lang)
+        if banned:
+            return banned
         request.user = user
         return view_func(request, *args, **kwargs)
     return wrapper
 
 
 def login_required(view_func):
+    """Any authenticated user — bans are enforced."""
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):
         lang = _get_lang(request)
         user, _ = _authenticate_request(request)
         if user is None:
             return _deny("unauthorized", lang, status.HTTP_401_UNAUTHORIZED)
+        if user.role != "admin":          # only check ban for non-admins
+            banned = _check_banned(user, lang)
+            if banned:
+                return banned
         request.user = user
         return view_func(request, *args, **kwargs)
     return wrapper
@@ -94,6 +115,10 @@ def admin_or_business_required(view_func):
             return _deny("unauthorized", lang, status.HTTP_401_UNAUTHORIZED)
         if user.role not in ("admin", "business"):
             return _deny("unauthorized", lang, status.HTTP_403_FORBIDDEN)
+        if user.role == "business":
+            banned = _check_banned(user, lang)
+            if banned:
+                return banned
         request.user = user
         return view_func(request, *args, **kwargs)
     return wrapper

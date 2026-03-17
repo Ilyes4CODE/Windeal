@@ -7,8 +7,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken
 from drf_spectacular.utils import (
-    extend_schema,
-    OpenApiParameter, OpenApiExample, OpenApiResponse,
+    extend_schema, OpenApiParameter, OpenApiExample, OpenApiResponse,
     inline_serializer,
 )
 from drf_spectacular.types import OpenApiTypes
@@ -19,8 +18,9 @@ from .models import User, ClientProfile, BusinessProfile
 from .serializers import (
     ClientRegisterSerializer,
     BusinessRegisterSerializer,
-    VerifyAccountSerializer,
-    LoginSerializer,
+    CheckUserSerializer,
+    PasswordlessLoginSerializer,
+    AdminLoginSerializer,
     UpdateClientProfileSerializer,
     UpdateBusinessProfileSerializer,
     UploadPaymentSerializer,
@@ -29,21 +29,8 @@ from admin_app.models import SubscriptionPlan, Payment, Category
 from core.messages import get_message
 from core.decorators import _authenticate_request, admin_required
 
-_LANG_HEADER = OpenApiParameter(
-    name="Accept-Language",
-    location=OpenApiParameter.HEADER,
-    description="Response language. Supported: `en` (default), `ar`, `fr`.",
-    required=False,
-    type=OpenApiTypes.STR,
-)
-
-_AUTH_HEADER = OpenApiParameter(
-    name="Authorization",
-    location=OpenApiParameter.HEADER,
-    description="JWT Bearer token. Format: `Bearer <access_token>`",
-    required=True,
-    type=OpenApiTypes.STR,
-)
+_LANG = OpenApiParameter(name="Accept-Language", location=OpenApiParameter.HEADER, description="en / ar / fr", required=False, type=OpenApiTypes.STR)
+_AUTH = OpenApiParameter(name="Authorization", location=OpenApiParameter.HEADER, description="Bearer <token>", required=True, type=OpenApiTypes.STR)
 
 
 def _lang(request):
@@ -77,40 +64,42 @@ def _get_tokens(user):
 def _build_user_data(user, request=None):
     data = {
         "tokens": _get_tokens(user),
-        "id": str(user.id),
+        "id":    str(user.id),
         "phone": user.phone,
         "email": user.email,
-        "role": user.role,
-        "city": user.city,
+        "role":  user.role,
+        "city":  user.city,
         "profile_picture": (
             request.build_absolute_uri(user.profile_picture.url)
             if user.profile_picture and request
             else (user.profile_picture.url if user.profile_picture else None)
         ),
+        "is_verified":       user.is_verified,
+        "is_banned":         user.is_banned,
         "subscription_status": user.subscription_status,
-        "subscription_end": user.subscription_end,
-        "is_verified": user.is_verified,
-        "created_at": user.created_at,
+        "subscription_end":    user.subscription_end,
+        "created_at":          user.created_at,
     }
     if user.role == "client" and hasattr(user, "client_profile"):
         p = user.client_profile
         data["profile"] = {
-            "first_name": p.first_name,
-            "last_name": p.last_name,
-            "date_of_birth": p.date_of_birth,
+            "full_name": p.full_name,
+            "email":     p.email,
+            "wilaya":    p.wilaya,
+            "school":    p.school,
         }
     elif user.role == "business" and hasattr(user, "business_profile"):
         bp = user.business_profile
         data["profile"] = {
             "business_name": bp.business_name,
-            "description": bp.description,
-            "category_id": str(bp.category.id) if bp.category else None,
-            "category_name": bp.category.name if bp.category else None,
-            "address": bp.address,
-            "website": bp.website,
-            "latitude": str(bp.latitude) if bp.latitude is not None else None,
-            "longitude": str(bp.longitude) if bp.longitude is not None else None,
-            "is_active": bp.is_active,
+            "description":   bp.description,
+            "category_id":   str(bp.category.id)   if bp.category else None,
+            "category_name": bp.category.name       if bp.category else None,
+            "address":       bp.address,
+            "website":       bp.website,
+            "latitude":      str(bp.latitude)  if bp.latitude  is not None else None,
+            "longitude":     str(bp.longitude) if bp.longitude is not None else None,
+            "is_active":     bp.is_active,
         }
     return data
 
@@ -126,25 +115,28 @@ def _check_subscription_expiry(user):
 
 @extend_schema(
     tags=["Auth — Client"],
-    summary="Register a new client account",
+    summary="Register a new client account (passwordless)",
     description=(
-        "Creates a new client user account with `is_verified=false`. "
-        "Call `POST /api/auth/verify/` once your SMS provider confirms the user.\n\n"
+        "Creates a new client account. No password needed — authentication is phone-based.\n\n"
+        "The account is created with `is_verified=true` and `is_banned=false` by default.\n\n"
+        "**Required fields:** `phone`, `full_name`, `wilaya`\n\n"
+        "**Optional fields:** `email`, `school`\n\n"
         "**No authentication required.**"
     ),
     request=ClientRegisterSerializer,
-    parameters=[_LANG_HEADER],
+    parameters=[_LANG],
     responses={
-        201: OpenApiResponse(description="Account created. Inactive until verified."),
+        201: OpenApiResponse(description="Account created. Returns full user data with JWT tokens."),
         400: OpenApiResponse(description="Validation error."),
     },
     examples=[
-        OpenApiExample(
-            "Client registration",
-            request_only=True,
-            value={"phone": "+213555123456", "password": "securePass123",
-                   "first_name": "Yacine", "last_name": "Boudiaf", "city": "Algiers"},
-        )
+        OpenApiExample("Client register", request_only=True, value={
+            "phone":     "+213555123456",
+            "full_name": "Yacine Boudiaf",
+            "email":     "yacine@example.com",
+            "wilaya":    "Alger",
+            "school":    "Université des Sciences et de la Technologie Houari Boumediene",
+        }),
     ],
 )
 @api_view(["POST"])
@@ -155,26 +147,30 @@ def register_client(request):
     if not serializer.is_valid():
         return _err("validation_error", lang, errors=serializer.errors)
 
-    data = serializer.validated_data
+    data  = serializer.validated_data
     phone = data["phone"]
 
     with transaction.atomic():
         user = User.objects.create_user(
-            phone=phone, role="client",
-            password=data["password"],
-            city=data.get("city", ""),
-            is_verified=False,
+            phone=phone,
+            role="client",
+            password=None,          # passwordless
+            city=data.get("wilaya", ""),
+            is_verified=True,
+            is_active=True,
         )
         ClientProfile.objects.create(
             user=user,
-            first_name=data["first_name"],
-            last_name=data["last_name"],
-            date_of_birth=data.get("date_of_birth"),
+            full_name=data["full_name"],
+            email=data.get("email"),
+            wilaya=data["wilaya"],
+            school=data.get("school") or "",
         )
 
     return _ok(
-        data={"phone": phone, "is_verified": False},
-        msg_key="user_created", lang=lang,
+        data=_build_user_data(user, request),
+        msg_key="user_created",
+        lang=lang,
         http_status=status.HTTP_201_CREATED,
     )
 
@@ -183,26 +179,26 @@ def register_client(request):
 
 @extend_schema(
     tags=["Auth — Business"],
-    summary="Register a new business account",
+    summary="Register a new business account (passwordless)",
     description=(
-        "Creates a new business account with `is_verified=false`. "
-        "`latitude` and `longitude` are used for Google Maps pin — must be provided together.\n\n"
+        "Creates a new business account. No password needed.\n\n"
+        "Latitude and longitude must be sent together for Google Maps pin.\n\n"
         "**No authentication required.**"
     ),
     request=BusinessRegisterSerializer,
-    parameters=[_LANG_HEADER],
+    parameters=[_LANG],
     responses={
-        201: OpenApiResponse(description="Business account created."),
+        201: OpenApiResponse(description="Business account created. Returns full user data with JWT tokens."),
         400: OpenApiResponse(description="Validation error."),
     },
     examples=[
-        OpenApiExample(
-            "Business registration",
-            request_only=True,
-            value={"phone": "+213555000111", "password": "securePass456",
-                   "business_name": "Café El Djazair", "city": "Algiers",
-                   "latitude": "36.737232", "longitude": "3.086472"},
-        )
+        OpenApiExample("Business register", request_only=True, value={
+            "phone":         "+213555000111",
+            "business_name": "Café El Djazair",
+            "city":          "Alger",
+            "latitude":      "36.737232",
+            "longitude":     "3.086472",
+        }),
     ],
 )
 @api_view(["POST"])
@@ -213,7 +209,7 @@ def register_business(request):
     if not serializer.is_valid():
         return _err("validation_error", lang, errors=serializer.errors)
 
-    data = serializer.validated_data
+    data  = serializer.validated_data
     phone = data["phone"]
 
     category = None
@@ -225,10 +221,12 @@ def register_business(request):
 
     with transaction.atomic():
         user = User.objects.create_user(
-            phone=phone, role="business",
-            password=data["password"],
+            phone=phone,
+            role="business",
+            password=None,          # passwordless
             city=data.get("city", ""),
-            is_verified=False,
+            is_verified=True,
+            is_active=True,
         )
         BusinessProfile.objects.create(
             user=user,
@@ -242,8 +240,9 @@ def register_business(request):
         )
 
     return _ok(
-        data={"phone": phone, "is_verified": False},
-        msg_key="user_created", lang=lang,
+        data=_build_user_data(user, request),
+        msg_key="user_created",
+        lang=lang,
         http_status=status.HTTP_201_CREATED,
     )
 
@@ -252,61 +251,42 @@ def register_business(request):
 
 @extend_schema(
     tags=["Auth — Admin"],
-    summary="Create a new admin account",
+    summary="Create a new admin account (admin only)",
     description=(
-        "Creates a new admin user. **Only callable by an existing authenticated admin.**\n\n"
-        "The new account is created with `role=admin`, `is_verified=true`, and `is_active=true` immediately — "
-        "no OTP or verification step is needed.\n\n"
-        "**Requires:** `Authorization: Bearer <admin_access_token>`"
+        "Creates a new admin with a password. Only callable by an existing admin.\n\n"
+        "**Requires:** `Authorization: Bearer <admin_token>`"
     ),
-    request=inline_serializer(
-        name="AdminRegisterRequest",
-        fields={
-            "phone":      drf_serializers.CharField(help_text="Phone number of the new admin."),
-            "password":   drf_serializers.CharField(help_text="Password (min 6 characters)."),
-            "first_name": drf_serializers.CharField(help_text="First name."),
-            "last_name":  drf_serializers.CharField(required=False, help_text="Last name (optional)."),
-        },
-    ),
-    parameters=[_LANG_HEADER, _AUTH_HEADER],
+    request=inline_serializer("AdminRegisterRequest", fields={
+        "phone":      drf_serializers.CharField(),
+        "password":   drf_serializers.CharField(),
+        "first_name": drf_serializers.CharField(),
+        "last_name":  drf_serializers.CharField(required=False),
+    }),
+    parameters=[_LANG, _AUTH],
     responses={
-        201: OpenApiResponse(description="Admin account created successfully."),
-        400: OpenApiResponse(description="Phone already registered or validation error."),
+        201: OpenApiResponse(description="Admin created."),
+        400: OpenApiResponse(description="Validation error."),
         401: OpenApiResponse(description="Not authenticated."),
-        403: OpenApiResponse(description="Only admins can create other admins."),
+        403: OpenApiResponse(description="Not admin."),
     },
-    examples=[
-        OpenApiExample(
-            "Create admin",
-            request_only=True,
-            value={"phone": "+213555999000", "password": "adminPass123",
-                   "first_name": "Riad", "last_name": "Belkacem"},
-        )
-    ],
 )
 @api_view(["POST"])
 @parser_classes([JSONParser])
 @admin_required
 def register_admin(request):
-    lang = _lang(request)
-
+    lang       = _lang(request)
     phone      = request.data.get("phone", "").strip()
     password   = request.data.get("password", "")
     first_name = request.data.get("first_name", "").strip()
-    last_name  = request.data.get("last_name", "Admin").strip()
+    last_name  = request.data.get("last_name",  "Admin").strip()
 
     if not phone or not password or not first_name:
         return _err("validation_error", lang,
                     errors={"detail": "phone, password, and first_name are required."})
-
     if not phone.lstrip("+").isdigit():
-        return _err("validation_error", lang,
-                    errors={"phone": "Phone must contain digits only."})
-
+        return _err("validation_error", lang, errors={"phone": "Must contain digits only."})
     if len(password) < 6:
-        return _err("validation_error", lang,
-                    errors={"password": "Password must be at least 6 characters."})
-
+        return _err("validation_error", lang, errors={"password": "Min 6 characters."})
     if User.objects.filter(phone=phone).exists():
         return _err("phone_exists", lang)
 
@@ -321,89 +301,192 @@ def register_admin(request):
         )
         ClientProfile.objects.create(
             user=user,
-            first_name=first_name,
-            last_name=last_name,
+            full_name=f"{first_name} {last_name}".strip(),
+            wilaya="—",
         )
 
     return _ok(
-        data={
-            "id": str(user.id),
-            "phone": user.phone,
-            "role": user.role,
-            "is_verified": user.is_verified,
-        },
+        data={"id": str(user.id), "phone": user.phone, "role": user.role},
         msg_key="user_created",
         lang=lang,
         http_status=status.HTTP_201_CREATED,
     )
 
 
-# ─── Verify Account ───────────────────────────────────────────────────────────
+# ─── Step 1: Check user existence + ban status ────────────────────────────────
 
 @extend_schema(
-    tags=["Auth — Common"],
-    summary="Verify account after phone confirmation",
+    tags=["Auth — Passwordless"],
+    summary="Step 1 — Check if phone exists and account is not banned",
     description=(
-        "Called by the app developer once their external SMS provider confirms verification. "
-        "Sets `is_verified=true` and returns JWT tokens.\n\n"
+        "First step of the passwordless login flow for **clients and businesses**.\n\n"
+        "Send the user's phone number. The response tells you:\n"
+        "- `exists` — whether an account with this phone is registered\n"
+        "- `is_banned` — whether the account has been banned by an admin\n"
+        "- `role` — the role of the account (`client` or `business`)\n\n"
+        "If `exists=false` or `is_banned=true`, **do not proceed to step 2**.\n\n"
         "**No authentication required.**"
     ),
-    request=VerifyAccountSerializer,
-    parameters=[_LANG_HEADER],
+    request=CheckUserSerializer,
+    parameters=[_LANG],
     responses={
-        200: OpenApiResponse(description="Account verified. Full user + tokens returned."),
-        400: OpenApiResponse(description="Phone not found or already verified."),
+        200: OpenApiResponse(
+            description="Check result.",
+            examples=[
+                OpenApiExample("User found, not banned", value={
+                    "success": True,
+                    "message": "Account found.",
+                    "data": {"exists": True, "is_banned": False, "role": "client", "phone": "+213555123456"},
+                }),
+                OpenApiExample("User not found", value={
+                    "success": True,
+                    "data": {"exists": False, "is_banned": False, "role": None, "phone": "+213555000000"},
+                }),
+                OpenApiExample("User banned", value={
+                    "success": False,
+                    "message": "Your account has been banned. Please contact support.",
+                    "data": {"exists": True, "is_banned": True, "role": "client"},
+                }),
+            ],
+        ),
     },
-    examples=[OpenApiExample("Verify", request_only=True, value={"phone": "+213555123456"})],
+    examples=[
+        OpenApiExample("Check phone", request_only=True, value={"phone": "+213555123456"}),
+    ],
 )
 @api_view(["POST"])
-def verify_account(request):
+def check_user(request):
     lang = _lang(request)
-    serializer = VerifyAccountSerializer(data=request.data, context={"request": request})
+    serializer = CheckUserSerializer(data=request.data, context={"request": request})
     if not serializer.is_valid():
         return _err("validation_error", lang, errors=serializer.errors)
 
     phone = serializer.validated_data["phone"]
-    user = User.objects.get(phone=phone)
-    user.is_verified = True
-    user.save(update_fields=["is_verified"])
 
-    return _ok(data=_build_user_data(user, request), msg_key="otp_verified", lang=lang)
+    try:
+        user = User.objects.get(phone=phone)
+    except User.DoesNotExist:
+        return _ok(
+            data={"exists": False, "is_banned": False, "role": None, "phone": phone},
+            lang=lang,
+        )
+
+    if user.is_banned:
+        return Response(
+            {
+                "success": False,
+                "message": get_message("account_banned", lang),
+                "data": {"exists": True, "is_banned": True, "role": user.role},
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if not user.is_active:
+        return _err("account_inactive", lang, status.HTTP_403_FORBIDDEN)
+
+    return _ok(
+        data={"exists": True, "is_banned": False, "role": user.role, "phone": phone},
+        msg_key="user_exists",
+        lang=lang,
+    )
 
 
-# ─── Login ────────────────────────────────────────────────────────────────────
+# ─── Step 2: Passwordless login (client + business) ───────────────────────────
 
 @extend_schema(
-    tags=["Auth — Common"],
-    summary="Login — client, business, or admin",
+    tags=["Auth — Passwordless"],
+    summary="Step 2 — Passwordless login, returns tokens and user data",
     description=(
-        "Authenticates any user. `identifier` accepts phone or email. "
-        "Returns full user data with JWT tokens and `role` field for frontend routing.\n\n"
+        "Second step of the passwordless login flow. **Only call this after step 1 confirms "
+        "`exists=true` and `is_banned=false`.**\n\n"
+        "Send the phone number. The backend returns the full user object plus JWT tokens.\n\n"
+        "This endpoint also auto-expires subscriptions if `subscription_end` has passed.\n\n"
+        "**Do not use this endpoint for admin login** — use `POST /api/auth/login/admin/` instead.\n\n"
         "**No authentication required.**"
     ),
-    request=LoginSerializer,
-    parameters=[_LANG_HEADER],
+    request=PasswordlessLoginSerializer,
+    parameters=[_LANG],
     responses={
-        200: OpenApiResponse(description="Login successful."),
-        401: OpenApiResponse(description="Wrong credentials."),
-        403: OpenApiResponse(description="Account not verified or inactive."),
+        200: OpenApiResponse(
+            description="Login successful. Full user data + JWT tokens returned.",
+            examples=[OpenApiExample("Success", value={
+                "success": True,
+                "message": "Login successful.",
+                "data": {
+                    "tokens": {"access": "eyJ...", "refresh": "eyJ..."},
+                    "id": "uuid", "phone": "+213555123456", "role": "client",
+                    "is_banned": False,
+                    "subscription_status": "FREE",
+                    "profile": {"full_name": "Yacine Boudiaf", "wilaya": "Alger", "school": "USTHB"},
+                },
+            })],
+        ),
+        400: OpenApiResponse(description="Phone not found."),
+        403: OpenApiResponse(description="Account is banned or inactive."),
     },
     examples=[
-        OpenApiExample("Phone login",  request_only=True, value={"identifier": "+213555123456", "password": "pass"}),
-        OpenApiExample("Email login",  request_only=True, value={"identifier": "user@example.com", "password": "pass"}),
+        OpenApiExample("Passwordless login", request_only=True, value={"phone": "+213555123456"}),
     ],
 )
 @api_view(["POST"])
-def login(request):
+def passwordless_login(request):
     lang = _lang(request)
-    serializer = LoginSerializer(data=request.data, context={"request": request})
+    serializer = PasswordlessLoginSerializer(data=request.data, context={"request": request})
+    if not serializer.is_valid():
+        return _err("validation_error", lang, errors=serializer.errors)
+
+    phone = serializer.validated_data["phone"]
+
+    try:
+        user = User.objects.get(phone=phone)
+    except User.DoesNotExist:
+        return _err("user_not_found", lang, status.HTTP_400_BAD_REQUEST)
+
+    if user.is_banned:
+        return _err("account_banned", lang, status.HTTP_403_FORBIDDEN)
+    if not user.is_active:
+        return _err("account_inactive", lang, status.HTTP_403_FORBIDDEN)
+    if user.role == "admin":
+        # Admins must use the admin login endpoint with password
+        return _err("unauthorized", lang, status.HTTP_403_FORBIDDEN)
+
+    _check_subscription_expiry(user)
+    return _ok(data=_build_user_data(user, request), msg_key="login_success", lang=lang)
+
+
+# ─── Admin login (password-based) ────────────────────────────────────────────
+
+@extend_schema(
+    tags=["Auth — Admin"],
+    summary="Admin login — phone/email + password",
+    description=(
+        "Password-based login for admin accounts only.\n\n"
+        "The `identifier` field accepts either a **phone number** or an **email address**.\n\n"
+        "Returns full user data with JWT tokens.\n\n"
+        "**No authentication required.**"
+    ),
+    request=AdminLoginSerializer,
+    parameters=[_LANG],
+    responses={
+        200: OpenApiResponse(description="Login successful."),
+        401: OpenApiResponse(description="Wrong credentials."),
+        403: OpenApiResponse(description="Not an admin account."),
+    },
+    examples=[
+        OpenApiExample("Admin login", request_only=True, value={"identifier": "+213555999000", "password": "adminPass123"}),
+    ],
+)
+@api_view(["POST"])
+def admin_login(request):
+    lang = _lang(request)
+    serializer = AdminLoginSerializer(data=request.data, context={"request": request})
     if not serializer.is_valid():
         return _err("validation_error", lang, errors=serializer.errors)
 
     identifier = serializer.validated_data["identifier"]
     password   = serializer.validated_data["password"]
 
-    user = None
+    user   = None
     lookup = {"email": identifier} if "@" in identifier else {"phone": identifier}
     try:
         u = User.objects.get(**lookup)
@@ -414,12 +497,11 @@ def login(request):
 
     if user is None:
         return _err("login_failed", lang, status.HTTP_401_UNAUTHORIZED)
-    if not user.is_verified:
-        return _err("account_not_verified", lang, status.HTTP_403_FORBIDDEN)
+    if user.role != "admin":
+        return _err("admin_only", lang, status.HTTP_403_FORBIDDEN)
     if not user.is_active:
         return _err("account_inactive", lang, status.HTTP_403_FORBIDDEN)
 
-    _check_subscription_expiry(user)
     return _ok(data=_build_user_data(user, request), msg_key="login_success", lang=lang)
 
 
@@ -427,14 +509,14 @@ def login(request):
 
 @extend_schema(
     tags=["Auth — Common"],
-    summary="Logout — invalidate refresh token",
+    summary="Logout — blacklist refresh token",
     description="Blacklists the provided refresh token.\n\n**No authentication required.**",
-    request=inline_serializer(
-        name="LogoutRequest",
-        fields={"refresh": drf_serializers.CharField(help_text="The refresh token.")},
-    ),
-    parameters=[_LANG_HEADER],
+    request=inline_serializer("LogoutRequest", fields={
+        "refresh": drf_serializers.CharField(help_text="The refresh token from login."),
+    }),
+    parameters=[_LANG],
     responses={200: OpenApiResponse(description="Logged out.")},
+    examples=[OpenApiExample("Logout", request_only=True, value={"refresh": "eyJ..."})],
 )
 @api_view(["POST"])
 def logout(request):
@@ -448,16 +530,20 @@ def logout(request):
     return _ok(msg_key="logout_success", lang=lang)
 
 
-# ─── Profile ──────────────────────────────────────────────────────────────────
+# ─── Get profile ──────────────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Auth — Common"],
     summary="Get current user profile",
-    description="Returns full profile of the authenticated user.\n\n**Requires:** `Authorization: Bearer <token>`",
-    parameters=[_LANG_HEADER, _AUTH_HEADER],
+    description=(
+        "Returns full profile of the authenticated user.\n\n"
+        "**Requires:** `Authorization: Bearer <token>`"
+    ),
+    parameters=[_LANG, _AUTH],
     responses={
         200: OpenApiResponse(description="Profile returned."),
         401: OpenApiResponse(description="Not authenticated."),
+        403: OpenApiResponse(description="Account banned."),
     },
 )
 @api_view(["GET"])
@@ -466,37 +552,40 @@ def get_profile(request):
     user, _ = _authenticate_request(request)
     if user is None:
         return _err("unauthorized", lang, status.HTTP_401_UNAUTHORIZED)
+    if user.role != "admin" and user.is_banned:
+        return _err("account_banned", lang, status.HTTP_403_FORBIDDEN)
     _check_subscription_expiry(user)
     return _ok(data=_build_user_data(user, request), msg_key="profile_fetched", lang=lang)
 
+
+# ─── Update profile ───────────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Auth — Common"],
     summary="Update current user profile",
     description=(
-        "Partial update. Client fields: `email`, `city`, `profile_picture`, `first_name`, `last_name`, `date_of_birth`. "
-        "Business fields: above + `business_name`, `description`, `category_id`, `address`, `website`, `latitude`, `longitude`.\n\n"
+        "Partial update. Only send the fields you want to change.\n\n"
+        "**Client fields:** `full_name`, `email`, `wilaya`, `school`, `city`, `profile_picture`\n\n"
+        "**Business fields:** `email`, `city`, `profile_picture`, `business_name`, `description`, "
+        "`category_id`, `address`, `website`, `latitude`, `longitude`\n\n"
         "**Requires:** `Authorization: Bearer <token>`"
     ),
-    request=inline_serializer(
-        name="UpdateProfileRequest",
-        fields={
-            "email":         drf_serializers.EmailField(required=False),
-            "city":          drf_serializers.CharField(required=False),
-            "profile_picture": drf_serializers.ImageField(required=False),
-            "first_name":    drf_serializers.CharField(required=False, help_text="[Client only]"),
-            "last_name":     drf_serializers.CharField(required=False, help_text="[Client only]"),
-            "date_of_birth": drf_serializers.DateField(required=False, help_text="[Client only]"),
-            "business_name": drf_serializers.CharField(required=False, help_text="[Business only]"),
-            "description":   drf_serializers.CharField(required=False, help_text="[Business only]"),
-            "category_id":   drf_serializers.UUIDField(required=False, help_text="[Business only]"),
-            "address":       drf_serializers.CharField(required=False, help_text="[Business only]"),
-            "website":       drf_serializers.URLField(required=False, help_text="[Business only]"),
-            "latitude":      drf_serializers.DecimalField(max_digits=9, decimal_places=6, required=False, help_text="[Business only]"),
-            "longitude":     drf_serializers.DecimalField(max_digits=9, decimal_places=6, required=False, help_text="[Business only]"),
-        },
-    ),
-    parameters=[_LANG_HEADER, _AUTH_HEADER],
+    request=inline_serializer("UpdateProfileRequest", fields={
+        "full_name":       drf_serializers.CharField(required=False,  help_text="[Client only] Full name."),
+        "email":           drf_serializers.EmailField(required=False),
+        "wilaya":          drf_serializers.CharField(required=False,  help_text="[Client only] Province/wilaya."),
+        "school":          drf_serializers.CharField(required=False,  help_text="[Client only] School or university."),
+        "city":            drf_serializers.CharField(required=False),
+        "profile_picture": drf_serializers.ImageField(required=False),
+        "business_name":   drf_serializers.CharField(required=False,  help_text="[Business only]"),
+        "description":     drf_serializers.CharField(required=False,  help_text="[Business only]"),
+        "category_id":     drf_serializers.UUIDField(required=False,  help_text="[Business only]"),
+        "address":         drf_serializers.CharField(required=False,  help_text="[Business only]"),
+        "website":         drf_serializers.URLField(required=False,   help_text="[Business only]"),
+        "latitude":        drf_serializers.DecimalField(max_digits=9, decimal_places=6, required=False, help_text="[Business only]"),
+        "longitude":       drf_serializers.DecimalField(max_digits=9, decimal_places=6, required=False, help_text="[Business only]"),
+    }),
+    parameters=[_LANG, _AUTH],
     responses={
         200: OpenApiResponse(description="Profile updated."),
         400: OpenApiResponse(description="Validation error."),
@@ -510,6 +599,8 @@ def update_profile(request):
     user, _ = _authenticate_request(request)
     if user is None:
         return _err("unauthorized", lang, status.HTTP_401_UNAUTHORIZED)
+    if user.role != "admin" and user.is_banned:
+        return _err("account_banned", lang, status.HTTP_403_FORBIDDEN)
 
     if user.role == "client":
         serializer = UpdateClientProfileSerializer(data=request.data, partial=True, context={"request": request})
@@ -535,9 +626,10 @@ def update_profile(request):
 
     if user.role == "client":
         p = user.client_profile
-        if "first_name" in data: p.first_name = data["first_name"]
-        if "last_name"  in data: p.last_name  = data["last_name"]
-        if "date_of_birth" in data: p.date_of_birth = data["date_of_birth"]
+        if "full_name" in data: p.full_name = data["full_name"]
+        if "email"     in data: p.email     = data["email"]
+        if "wilaya"    in data: p.wilaya    = data["wilaya"]
+        if "school"    in data: p.school    = data["school"]
         p.save()
     elif user.role == "business":
         bp = user.business_profile
@@ -557,7 +649,7 @@ def update_profile(request):
     return _ok(data=_build_user_data(user, request), msg_key="profile_updated", lang=lang)
 
 
-# ─── Payment Upload ───────────────────────────────────────────────────────────
+# ─── Payment upload ───────────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Auth — Payment"],
@@ -568,12 +660,12 @@ def update_profile(request):
         "**Requires:** `Authorization: Bearer <token>` (client or business)"
     ),
     request=UploadPaymentSerializer,
-    parameters=[_LANG_HEADER, _AUTH_HEADER],
+    parameters=[_LANG, _AUTH],
     responses={
         201: OpenApiResponse(description="Receipt uploaded."),
         400: OpenApiResponse(description="Invalid plan or file error."),
         401: OpenApiResponse(description="Not authenticated."),
-        403: OpenApiResponse(description="Admins cannot upload payments."),
+        403: OpenApiResponse(description="Admins cannot upload. Banned users blocked."),
     },
 )
 @api_view(["POST"])
@@ -585,13 +677,14 @@ def upload_payment(request):
         return _err("unauthorized", lang, status.HTTP_401_UNAUTHORIZED)
     if user.role == "admin":
         return _err("unauthorized", lang, status.HTTP_403_FORBIDDEN)
+    if user.is_banned:
+        return _err("account_banned", lang, status.HTTP_403_FORBIDDEN)
 
     serializer = UploadPaymentSerializer(data=request.data, context={"request": request})
     if not serializer.is_valid():
         return _err("validation_error", lang, errors=serializer.errors)
 
     data = serializer.validated_data
-
     try:
         plan = SubscriptionPlan.objects.get(id=data["plan_id"], is_active=True)
     except SubscriptionPlan.DoesNotExist:
@@ -610,28 +703,25 @@ def upload_payment(request):
     user.save(update_fields=["subscription_status"])
 
     return _ok(
-        data={
-            "payment_id": str(payment.id),
-            "status": payment.status,
-            "plan": plan.name,
-            "amount": str(payment.amount),
-        },
-        msg_key="payment_uploaded", lang=lang,
+        data={"payment_id": str(payment.id), "status": payment.status,
+              "plan": plan.name, "amount": str(payment.amount)},
+        msg_key="payment_uploaded",
+        lang=lang,
         http_status=status.HTTP_201_CREATED,
     )
 
 
-# ─── Subscription Status ──────────────────────────────────────────────────────
+# ─── Subscription status ──────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Auth — Payment"],
     summary="Get subscription status",
     description=(
-        "Returns current subscription status. Expiry auto-checked on call.\n\n"
+        "Returns current subscription state. Expiry is auto-checked on every call.\n\n"
         "**States:** `FREE` · `PENDING` · `ACTIVE` · `EXPIRED`\n\n"
         "**Requires:** `Authorization: Bearer <token>`"
     ),
-    parameters=[_LANG_HEADER, _AUTH_HEADER],
+    parameters=[_LANG, _AUTH],
     responses={200: OpenApiResponse(description="Subscription info returned.")},
 )
 @api_view(["GET"])
@@ -644,8 +734,9 @@ def get_subscription_status(request):
     return _ok(
         data={
             "subscription_status": user.subscription_status,
-            "subscription_end": user.subscription_end,
+            "subscription_end":    user.subscription_end,
             "plan": user.current_plan.name if user.current_plan else None,
         },
-        msg_key="subscription_status_fetched", lang=lang,
+        msg_key="subscription_status_fetched",
+        lang=lang,
     )
