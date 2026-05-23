@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "auth_app.apps.AuthAppConfig",
     "admin_app.apps.AdminAppConfig",
+    "deals_app.apps.DealsAppConfig",
 ]
 
 MIDDLEWARE = [
@@ -95,7 +96,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",
     ],
-    "EXCEPTION_HANDLER": "apps.core.exceptions.custom_exception_handler",
+    "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 

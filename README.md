@@ -1,0 +1,368 @@
+# WINDEAL Backend
+
+Django + DRF backend for **WINDEAL** — a mobile platform that helps users discover local discounts from businesses (cafés, restaurants, gyms, leisure spots) and redeem them via QR codes.
+
+This document covers running the backend locally on **macOS** (Apple Silicon or Intel).
+
+---
+
+## Stack
+
+| Layer            | Tech                                                       |
+| ---------------- | ---------------------------------------------------------- |
+| Language         | Python 3.10+                                               |
+| Web framework    | Django 5.2                                                 |
+| API framework    | Django REST Framework 3.16                                 |
+| Auth             | JWT (djangorestframework-simplejwt) + passwordless         |
+| OpenAPI / Docs   | drf-spectacular (Swagger UI + ReDoc)                       |
+| Database (dev)   | SQLite                                                     |
+| Database (prod)  | PostgreSQL (via `psycopg2-binary` + `dj-database-url`)     |
+| File storage     | Local `media/` (uploaded images, receipts)                 |
+| Static files     | WhiteNoise                                                 |
+| WSGI server      | Gunicorn                                                   |
+
+---
+
+## Apps
+
+| Django app   | Responsibility                                                                 |
+| ------------ | ------------------------------------------------------------------------------ |
+| `auth_app`   | Users (client / business / admin), profiles, JWT, passwordless login, payment receipts |
+| `admin_app`  | Categories, subscription plans, payment review, user management                |
+| `deals_app`  | Deals/offers, favorites, QR redemption, notifications, business dashboard      |
+| `core`       | Shared decorators, exception handler, localised messages (`en` / `ar` / `fr`)  |
+
+---
+
+## Prerequisites (macOS)
+
+1. **Homebrew** — install from <https://brew.sh> if not already installed.
+2. **Python 3.10+** — comes with most modern macOS releases; otherwise:
+   ```sh
+   brew install python@3.11
+   ```
+3. **Git**:
+   ```sh
+   brew install git
+   ```
+4. *(Optional, for Postgres in production)*
+   ```sh
+   brew install postgresql@15
+   ```
+
+> Apple Silicon note: Pillow & psycopg2-binary wheels both publish arm64 builds — no extra setup needed.
+
+---
+
+## 1. Clone the repo
+
+```sh
+git clone <YOUR_REPO_URL> windeal
+cd windeal
+```
+
+The project root contains `manage.py`, `requirements.txt`, and the inner Django package `Windeal/`.
+
+---
+
+## 2. Create & activate a virtualenv
+
+```sh
+python3 -m venv venv
+source venv/bin/activate
+```
+
+You should now see `(venv)` in your shell prompt. To exit later, run `deactivate`.
+
+---
+
+## 3. Install dependencies
+
+```sh
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+If you only want a dev install on Apple Silicon and `psycopg2-binary` fails to compile (rare on recent macOS), use:
+
+```sh
+pip install -r requirements.txt --only-binary=:all:
+```
+
+---
+
+## 4. Apply database migrations
+
+The default config uses SQLite, so no DB server is required for local dev.
+
+```sh
+python manage.py migrate
+```
+
+This creates `db.sqlite3` in the project root.
+
+---
+
+## 5. Create an admin user
+
+Admins have password-based login and access to the admin endpoints + the Django admin panel.
+
+```sh
+python manage.py createsuperuser
+```
+
+You'll be asked for:
+- **Phone** (used as the username, e.g. `+213555999000`)
+- **Password**
+
+---
+
+## 6. Run the dev server
+
+```sh
+python manage.py runserver
+```
+
+By default it listens on `http://127.0.0.1:8000`.
+
+To bind to all interfaces (e.g. to test from a phone on the same Wi-Fi):
+
+```sh
+python manage.py runserver 0.0.0.0:8000
+```
+
+---
+
+## 7. Browse the API docs
+
+| URL                                  | What it is                                              |
+| ------------------------------------ | ------------------------------------------------------- |
+| `http://127.0.0.1:8000/api/docs/`    | **Swagger UI** — interactive, sends real requests       |
+| `http://127.0.0.1:8000/api/redoc/`   | ReDoc — read-only reference                             |
+| `http://127.0.0.1:8000/api/schema/`  | Raw OpenAPI 3 schema (YAML)                             |
+| `http://127.0.0.1:8000/django-admin/`| Django admin panel (login with the superuser)           |
+
+To call protected endpoints from Swagger UI:
+
+1. Register or login (passwordless: `POST /api/auth/login/` with `{"phone": "..."}`).
+2. Copy the `data.tokens.access` value from the response.
+3. Click **Authorize** in Swagger UI and paste it as `Bearer <token>`.
+
+---
+
+## Endpoint summary
+
+All endpoints are JSON unless flagged as `multipart/form-data` (for file uploads).
+Authenticated endpoints require `Authorization: Bearer <access_token>`.
+
+### Auth & onboarding
+| Method | Path                              | Purpose                                                       |
+| ------ | --------------------------------- | ------------------------------------------------------------- |
+| POST   | `/api/auth/register/client/`      | Register a client (passwordless)                              |
+| POST   | `/api/auth/register/business/`    | Register a business (passwordless)                            |
+| POST   | `/api/auth/register/admin/`       | Create another admin (admin-only)                             |
+| POST   | `/api/auth/check/`                | Step 1 of login: does this phone exist? is it banned?         |
+| POST   | `/api/auth/login/`                | Step 2 of login: returns JWT tokens + user data               |
+| POST   | `/api/auth/login/admin/`          | Admin login (phone/email + password)                          |
+| POST   | `/api/auth/logout/`               | Blacklist the refresh token                                   |
+
+### Profile (shared)
+| Method | Path                              | Purpose                       |
+| ------ | --------------------------------- | ----------------------------- |
+| GET    | `/api/auth/profile/`              | Get current user              |
+| PATCH  | `/api/auth/profile/update/`       | Update current user           |
+| GET    | `/api/user/profile/`              | Alias (matches API spec path) |
+| POST   | `/api/user/profile/update/`       | Alias (matches API spec path) |
+| DELETE | `/api/user/account/delete/`       | Permanently delete account    |
+
+### Subscription
+| Method | Path                              | Purpose                                                          |
+| ------ | --------------------------------- | ---------------------------------------------------------------- |
+| GET    | `/api/subscription/plans/`        | List public plans (filtered by user role)                        |
+| POST   | `/api/subscription/upgrade/`      | Upload receipt → status becomes `PENDING` (multipart/form-data)  |
+| POST   | `/api/auth/payment/upload/`       | Alternative payment upload (legacy path)                         |
+| GET    | `/api/auth/subscription/status/`  | Get current subscription state                                   |
+
+### Client side
+| Method | Path                              | Purpose                                                                                |
+| ------ | --------------------------------- | -------------------------------------------------------------------------------------- |
+| GET    | `/api/categories/`                | List active deal categories                                                            |
+| GET    | `/api/deals/`                     | List deals (filters: `category_id`, `search`, `lat`, `lng`; paginated)                 |
+| GET    | `/api/deals/<id>/`                | Retrieve one deal                                                                      |
+| POST   | `/api/deals/favorites/toggle/`    | Add or remove the deal from favorites                                                  |
+| GET    | `/api/deals/favorites/`           | List the current user's favorite deals                                                 |
+| POST   | `/api/deals/generate-code/`       | Generate a one-time QR redemption token (requires ACTIVE WINDEAL+)                     |
+
+### Business side
+| Method | Path                                       | Purpose                                                                  |
+| ------ | ------------------------------------------ | ------------------------------------------------------------------------ |
+| GET    | `/api/business/offers/`                    | List my offers                                                           |
+| POST   | `/api/business/offers/create/`             | Create a new offer (multipart/form-data for image)                       |
+| GET    | `/api/business/offers/<id>/`               | Retrieve one of my offers                                                |
+| PATCH  | `/api/business/offers/<id>/`               | Update one of my offers                                                  |
+| DELETE | `/api/business/offers/<id>/`               | Delete one of my offers                                                  |
+| PATCH  | `/api/business/offers/<id>/toggle/`        | Toggle `is_active` on an offer                                           |
+| GET    | `/api/business/dashboard/`                 | Dashboard metrics (today's redemptions, trend, active offers, activity)  |
+| GET    | `/api/business/analytics/?period=7d`       | Analytics (`period`: `7d` / `30d` / `all`)                               |
+| POST   | `/api/business/redeem/`                    | Scan & redeem a QR token                                                 |
+
+### Notifications
+| Method | Path                                    | Purpose                       |
+| ------ | --------------------------------------- | ----------------------------- |
+| GET    | `/api/notifications/`                   | List current user notifications |
+| PATCH  | `/api/notifications/<id>/read/`         | Mark a notification as read   |
+
+### Admin (admin role required)
+| Method        | Path                                                  | Purpose                                  |
+| ------------- | ----------------------------------------------------- | ---------------------------------------- |
+| GET / POST    | `/api/admin/categories/`                              | List / create category                   |
+| GET / PATCH / DELETE | `/api/admin/categories/<id>/`                  | Retrieve / update / delete category      |
+| GET / POST    | `/api/admin/plans/`                                   | List / create plan                       |
+| GET / PATCH / DELETE | `/api/admin/plans/<id>/`                       | Retrieve / update / delete plan          |
+| GET           | `/api/admin/payments/pending/`                        | List pending payment receipts            |
+| GET           | `/api/admin/payments/all/`                            | List all payments                        |
+| POST          | `/api/admin/payments/<id>/review/`                    | Approve / reject a payment               |
+| GET           | `/api/admin/users/`                                   | List users (filter `?role=...`)          |
+| PATCH         | `/api/admin/users/<id>/toggle/`                       | Toggle `is_active`                       |
+| PATCH         | `/api/admin/users/<id>/ban/`                          | Toggle `is_banned`                       |
+| PATCH         | `/api/admin/users/<id>/subscription/`                 | Force-set subscription status            |
+
+All responses follow:
+
+```json
+{ "success": true, "message": "…", "data": { … } }
+```
+
+Errors return `success: false` with a localised `message` and optional `errors` map. Set the `Accept-Language` header to `en` / `ar` / `fr` to switch language.
+
+---
+
+## Working with media uploads
+
+Uploaded files (deal images, profile pictures, payment receipts, category icons) are saved under `media/`. The dev server serves them at `/media/...`.
+
+To clear uploads while developing:
+
+```sh
+rm -rf media/
+```
+
+---
+
+## Resetting the database
+
+```sh
+rm db.sqlite3
+python manage.py migrate
+python manage.py createsuperuser
+```
+
+---
+
+## Switching to Postgres (optional)
+
+The settings default to SQLite but `dj-database-url` and `psycopg2-binary` are installed. To use Postgres:
+
+1. Create a database:
+   ```sh
+   brew services start postgresql@15
+   createdb windeal
+   ```
+2. Set an env var **before** running `manage.py`:
+   ```sh
+   export DATABASE_URL="postgres://$(whoami)@localhost:5432/windeal"
+   ```
+3. In `Windeal/settings.py`, replace the `DATABASES` block with:
+   ```python
+   import dj_database_url
+   DATABASES = {
+       "default": dj_database_url.config(
+           default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+           conn_max_age=600,
+       )
+   }
+   ```
+4. Run `python manage.py migrate`.
+
+---
+
+## Running tests
+
+```sh
+python manage.py test
+```
+
+To run a single app:
+
+```sh
+python manage.py test deals_app
+```
+
+---
+
+## Production-ish run on macOS (Gunicorn)
+
+```sh
+python manage.py collectstatic --no-input
+gunicorn Windeal.wsgi:application --bind 127.0.0.1:8000 --workers 3
+```
+
+(Equivalent to `start.sh` used in the deploy.)
+
+---
+
+## Common issues on macOS
+
+| Symptom                                                          | Fix                                                                                                  |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `command not found: python`                                      | Use `python3` (and `python3 -m venv venv`). Some macOS installs don't symlink `python`.              |
+| `ssl.SSLCertVerificationError` on `pip install`                  | Run `/Applications/Python\ 3.x/Install\ Certificates.command` once.                                  |
+| `psycopg2-binary` build fails                                    | Run `pip install --upgrade pip wheel`, then retry. Or skip Postgres and stick with SQLite for dev.   |
+| Port 8000 already in use                                         | Run `lsof -i :8000` to find the PID, then `kill <pid>` — or pass a different port to `runserver`.    |
+| `OSError: [Errno 24] Too many open files` when uploading         | Increase the macOS limit: `ulimit -n 4096` in the current shell.                                     |
+| Pillow can't open uploaded image                                 | macOS occasionally strips EXIF — ensure the source file is a real JPEG/PNG, not a HEIC.              |
+
+---
+
+## Project layout
+
+```
+.
+├── manage.py
+├── requirements.txt
+├── build.sh                 # deploy hook: pip install + migrate + collectstatic
+├── start.sh                 # deploy hook: gunicorn entrypoint
+├── db.sqlite3               # dev DB (gitignored in prod)
+├── media/                   # uploaded files (gitignored)
+├── Windeal/                 # Django project (settings, urls, wsgi)
+│   ├── settings.py
+│   └── urls.py
+├── auth_app/                # users + auth + payments upload
+├── admin_app/               # admin: categories, plans, payment review, user management
+├── deals_app/               # deals/offers, favorites, QR redemption, notifications, business dashboard
+└── core/                    # decorators, custom exception handler, localised messages
+```
+
+---
+
+## Quick smoke test (curl)
+
+```sh
+# Register a client
+curl -X POST http://127.0.0.1:8000/api/auth/register/client/ \
+  -H 'Content-Type: application/json' \
+  -d '{"phone":"+213555111222","full_name":"Test","wilaya":"Alger"}'
+
+# Log in (passwordless)
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/auth/login/ \
+  -H 'Content-Type: application/json' \
+  -d '{"phone":"+213555111222"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['tokens']['access'])")
+
+# Use the token
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/categories/
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/deals/
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/subscription/plans/
+```
+
+If those return `{"success": true, ...}`, the backend is up and the auth flow is working end-to-end.

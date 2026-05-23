@@ -298,6 +298,7 @@ def list_users(request):
     tags=["Admin — Users"],
     summary="Toggle user active/inactive status",
     description="Flips `is_active`. Deactivated users cannot log in.\n\n**Requires:** Admin token.",
+    request=None,
     parameters=[_LANG, _AUTH, OpenApiParameter("user_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
     responses={200: OpenApiResponse(description="Toggled."), 404: OpenApiResponse(description="Not found.")},
 )
@@ -327,6 +328,7 @@ def toggle_user(request, user_id):
         "**Cannot ban admin accounts.**\n\n"
         "**Requires:** Admin token."
     ),
+    request=None,
     parameters=[_LANG, _AUTH, OpenApiParameter("user_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
     responses={
         200: OpenApiResponse(
