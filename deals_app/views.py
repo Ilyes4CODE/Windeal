@@ -390,6 +390,12 @@ def create_offer(request):
         except Category.DoesNotExist:
             category = None
 
+    # DRF's BooleanField treats a missing field in multipart/form-data as False
+    # (HTML checkbox semantics), which would silently create inactive offers.
+    # Honour the model default (active) when the client did not send is_active.
+    if "is_active" not in request.data:
+        serializer.validated_data["is_active"] = True
+
     deal = serializer.save(business=request.user, category=category)
     return _ok(
         data=BusinessOfferSerializer(deal, context={"request": request}).data,
@@ -755,9 +761,53 @@ def subscription_upgrade(request):
 @extend_schema(
     tags=["Notifications"],
     summary="List current user's notifications",
-    description="Returns notifications for the authenticated user, newest first.\n\n**Auth required.**",
+    description=(
+        "Returns notifications for the authenticated user, newest first.\n\n"
+        "Each notification object contains:\n"
+        "- `id` — UUID of the notification\n"
+        "- `title` — short headline\n"
+        "- `body` — full message text (may be empty)\n"
+        "- `type` — one of `system`, `payment`, `subscription`, `deal`, `redemption`\n"
+        "- `is_read` — whether the user has read it\n"
+        "- `created_at` — ISO-8601 timestamp\n\n"
+        "**Auth required.**"
+    ),
     parameters=[_LANG, _AUTH],
-    responses={200: OpenApiResponse(description="Notifications returned.")},
+    responses={
+        200: OpenApiResponse(
+            response=inline_serializer(
+                name="NotificationListResponse",
+                fields={
+                    "success": drf_serializers.BooleanField(default=True),
+                    "data": NotificationSerializer(many=True),
+                },
+            ),
+            description="Notifications returned.",
+            examples=[
+                OpenApiExample("Notifications list", value={
+                    "success": True,
+                    "data": [
+                        {
+                            "id": "9b2f1c6e-3a4d-4c8e-9f1a-2b3c4d5e6f70",
+                            "title": "Payment approved",
+                            "body": "Your WINDEAL+ subscription is now active until 2026-07-07.",
+                            "type": "payment",
+                            "is_read": False,
+                            "created_at": "2026-06-07T10:15:30Z",
+                        },
+                        {
+                            "id": "1a2b3c4d-5e6f-4071-8a9b-0c1d2e3f4a5b",
+                            "title": "Welcome to WINDEAL",
+                            "body": "Browse local deals and redeem them with QR codes.",
+                            "type": "system",
+                            "is_read": True,
+                            "created_at": "2026-06-06T08:00:00Z",
+                        },
+                    ],
+                }),
+            ],
+        ),
+    },
 )
 @api_view(["GET"])
 @login_required
@@ -770,10 +820,40 @@ def list_notifications(request):
 @extend_schema(
     tags=["Notifications"],
     summary="Mark a notification as read",
-    description="Sets `is_read=true` on one notification owned by the authenticated user.\n\n**Auth required.**",
+    description=(
+        "Sets `is_read=true` on one notification owned by the authenticated user "
+        "and returns the updated notification object.\n\n"
+        "The returned object contains: `id`, `title`, `body`, `type`, `is_read`, `created_at`.\n\n"
+        "**Auth required.**"
+    ),
     request=None,
     parameters=[_LANG, _AUTH, OpenApiParameter("notification_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
-    responses={200: OpenApiResponse(description="Updated."), 404: OpenApiResponse(description="Not found.")},
+    responses={
+        200: OpenApiResponse(
+            response=inline_serializer(
+                name="NotificationReadResponse",
+                fields={
+                    "success": drf_serializers.BooleanField(default=True),
+                    "data": NotificationSerializer(),
+                },
+            ),
+            description="Updated.",
+            examples=[
+                OpenApiExample("Marked read", value={
+                    "success": True,
+                    "data": {
+                        "id": "9b2f1c6e-3a4d-4c8e-9f1a-2b3c4d5e6f70",
+                        "title": "Payment approved",
+                        "body": "Your WINDEAL+ subscription is now active until 2026-07-07.",
+                        "type": "payment",
+                        "is_read": True,
+                        "created_at": "2026-06-07T10:15:30Z",
+                    },
+                }),
+            ],
+        ),
+        404: OpenApiResponse(description="Not found."),
+    },
 )
 @api_view(["PATCH"])
 @login_required
