@@ -16,6 +16,10 @@ urlpatterns = [
     path("payments/all/",                        views.all_payments,      name="admin_all_payments"),
     path("payments/<uuid:payment_id>/review/",   views.review_payment,    name="admin_review_payment"),
 
+    # ── Deals (featuring control) ──────────────────────────────────────────────
+    path("deals/",                               views.deals,             name="admin_deals"),
+    path("deals/<uuid:deal_id>/feature/",        views.feature_deal,      name="admin_feature_deal"),
+
     # ── Users ──────────────────────────────────────────────────────────────────
     path("users/",                               views.list_users,        name="admin_list_users"),
     path("users/<uuid:user_id>/toggle/",         views.toggle_user,       name="admin_toggle_user"),

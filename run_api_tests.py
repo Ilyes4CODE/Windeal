@@ -185,6 +185,7 @@ def run():
     receipt = SimpleUploadedFile("receipt.png", PNG, content_type="image/png")
     r = c.post("/api/subscription/upgrade/", {
         "plan_id": plan_id, "receipt_image": receipt,
+        "payment_method": "BaridiMob", "reference_number": "TX-99812",
     }, format="multipart", **AUTH_CLIENT)
     check("POST /api/subscription/upgrade/", r.status_code == 201, f"{r.status_code} {body(r)}")
 
@@ -224,6 +225,39 @@ def run():
     check("GET /api/business/dashboard/", r.status_code == 200, f"{r.status_code}")
     r = c.get("/api/business/analytics/?period=7d", **AUTH_BIZ)
     check("GET /api/business/analytics/", r.status_code == 200, f"{r.status_code}")
+
+    # ── ADMIN: deals featuring control ───────────────────────────────────────
+    r = c.get("/api/admin/deals/", **AUTH_ADMIN)
+    check("GET /api/admin/deals/", r.status_code == 200 and len(body(r).get("data", [])) >= 1, f"{r.status_code}")
+    r = c.patch(f"/api/admin/deals/{offer_id}/feature/", {"is_featured": True}, format="json", **AUTH_ADMIN)
+    check("PATCH /api/admin/deals/{id}/feature/ (set)", r.status_code == 200 and body(r).get("data", {}).get("is_featured") is True, f"{r.status_code} {body(r)}")
+    r = c.get("/api/admin/deals/?featured=true", **AUTH_ADMIN)
+    check("GET /api/admin/deals/?featured=true", r.status_code == 200 and len(body(r).get("data", [])) >= 1, f"{r.status_code}")
+
+    # ── CLIENT: featured section ─────────────────────────────────────────────
+    r = c.get("/api/deals/featured/", **AUTH_CLIENT)
+    fdata = body(r).get("data", [])
+    featured_ok = any(d["id"] == offer_id and d.get("is_featured") for d in fdata)
+    check("GET /api/deals/featured/ (contains featured deal)", r.status_code == 200 and featured_ok, f"{r.status_code} {fdata[:1]}")
+
+    # ── CLIENT: nearby section (business is at 36.737232, 3.086472) ───────────
+    r = c.get("/api/deals/nearby/?lat=36.737232&lng=3.086472&km=10", **AUTH_CLIENT)
+    ndata = body(r).get("data", {}).get("results", [])
+    near_ok = any(d["id"] == offer_id for d in ndata) and ndata and ndata[0].get("distance_km") is not None
+    check("GET /api/deals/nearby/?km=10 (finds nearby + distance_km)", r.status_code == 200 and near_ok, f"{r.status_code} {ndata[:1]}")
+    # far point with tiny radius -> excluded
+    r = c.get("/api/deals/nearby/?lat=0&lng=0&km=1", **AUTH_CLIENT)
+    far_excluded = all(d["id"] != offer_id for d in body(r).get("data", {}).get("results", []))
+    check("GET /api/deals/nearby/ km radius excludes far deals", r.status_code == 200 and far_excluded, f"{r.status_code}")
+    # missing lat/lng -> 400
+    r = c.get("/api/deals/nearby/", **AUTH_CLIENT)
+    check("GET /api/deals/nearby/ without lat/lng -> 400", r.status_code == 400, f"{r.status_code}")
+
+    # ── SUBSCRIPTION: payment history ────────────────────────────────────────
+    r = c.get("/api/subscription/payment-history/", **AUTH_CLIENT)
+    hist = body(r).get("data", [])
+    hist_fields_ok = hist and set(["id", "transaction_date", "amount", "payment_method", "subscription_plan", "reference_number", "status"]).issubset(hist[0].keys())
+    check("GET /api/subscription/payment-history/ (fields present)", r.status_code == 200 and hist_fields_ok, f"{r.status_code} {hist[:1]}")
 
     # ── NOTIFICATIONS (the focus of the Swagger fix) ─────────────────────────
     notif = Notification.objects.create(

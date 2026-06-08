@@ -36,6 +36,7 @@ class DealListSerializer(serializers.ModelSerializer):
     longitude        = serializers.SerializerMethodField()
     discount_amount  = serializers.CharField(source="discount_value")
     is_favorite      = serializers.SerializerMethodField()
+    distance_km      = serializers.SerializerMethodField()
 
     class Meta:
         model  = Deal
@@ -48,6 +49,8 @@ class DealListSerializer(serializers.ModelSerializer):
             "latitude", "longitude",
             "discount_amount", "old_price", "new_price",
             "is_favorite",
+            "is_featured",
+            "distance_km",
             "expiry_date", "is_active",
             "created_at",
         ]
@@ -94,6 +97,14 @@ class DealListSerializer(serializers.ModelSerializer):
             return obj.id in fav_ids
         return Favorite.objects.filter(user=user, deal=obj).exists()
 
+    def get_distance_km(self, obj):
+        # Populated by the Nearby endpoint via context["distances"] = {deal_id: km}.
+        distances = self.context.get("distances")
+        if not distances:
+            return None
+        km = distances.get(obj.id)
+        return round(km, 2) if km is not None else None
+
 
 # ─── Business offers (CRUD) ───────────────────────────────────────────────────
 
@@ -116,9 +127,11 @@ class BusinessOfferSerializer(serializers.ModelSerializer):
             "rating",
             "expiry_date",
             "is_active",
+            "is_featured",
             "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "image_url", "category_name", "rating", "created_at", "updated_at"]
+        # is_featured is admin-controlled, so it is read-only for businesses.
+        read_only_fields = ["id", "image_url", "category_name", "rating", "is_featured", "created_at", "updated_at"]
         extra_kwargs = {
             "image":     {"write_only": True, "required": False, "allow_null": True},
             "category":  {"required": False, "allow_null": True},
@@ -225,3 +238,53 @@ class RedeemSerializer(serializers.Serializer):
 
 class ToggleFavoriteSerializer(serializers.Serializer):
     deal_id = serializers.UUIDField()
+
+
+# ─── Payment history (client/business view of their own payments) ──────────────
+
+class PaymentHistorySerializer(serializers.ModelSerializer):
+    """User-facing view of a subscription payment, per the additional spec."""
+    transaction_date  = serializers.DateTimeField(source="created_at", read_only=True)
+    subscription_plan = serializers.CharField(source="plan.name", read_only=True, default=None)
+
+    class Meta:
+        from admin_app.models import Payment as _Payment
+        model  = _Payment
+        fields = [
+            "id",
+            "transaction_date",
+            "amount",
+            "payment_method",
+            "subscription_plan",
+            "reference_number",
+            "status",
+        ]
+        read_only_fields = fields
+
+
+# ─── Admin deal listing / featuring ───────────────────────────────────────────
+
+class AdminDealSerializer(serializers.ModelSerializer):
+    """Compact deal representation for the admin panel (featuring control)."""
+    business_name = serializers.SerializerMethodField()
+    category_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Deal
+        fields = [
+            "id", "title", "business_name", "category_name",
+            "rating", "is_featured", "is_active", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_business_name(self, obj):
+        bp = getattr(obj.business, "business_profile", None)
+        return bp.business_name if bp else (obj.business.phone if obj.business else None)
+
+    def get_category_name(self, obj):
+        return obj.category.name if obj.category else None
+
+
+class FeatureDealSerializer(serializers.Serializer):
+    is_featured = serializers.BooleanField(required=False,
+        help_text="Explicit value to set. If omitted, the current flag is toggled.")

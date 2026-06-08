@@ -73,6 +73,10 @@ class Payment(models.Model):
     )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     receipt = models.FileField(upload_to="payment_receipts/")
+    payment_method = models.CharField(max_length=100, blank=True, default="",
+        help_text="How the user paid (e.g. CCP, BaridiMob, bank transfer).")
+    reference_number = models.CharField(max_length=200, blank=True, default="",
+        help_text="User-supplied payment reference / transaction number.")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="PENDING")
     reviewed_by = models.ForeignKey(
         "auth_app.User",

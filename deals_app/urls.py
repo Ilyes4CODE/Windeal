@@ -8,6 +8,8 @@ urlpatterns = [
 
     # ── Client: Deals (Home / Explore) ────────────────────────────────────────
     path("deals/",                            views.list_deals,             name="list_deals"),
+    path("deals/featured/",                   views.featured_deals,         name="featured_deals"),
+    path("deals/nearby/",                     views.nearby_deals,           name="nearby_deals"),
     path("deals/favorites/",                  views.list_favorites,         name="list_favorites"),
     path("deals/favorites/toggle/",           views.toggle_favorite,        name="toggle_favorite"),
     path("deals/generate-code/",              views.generate_redemption_code, name="generate_redemption_code"),
@@ -27,6 +29,7 @@ urlpatterns = [
     # ── Subscription ─────────────────────────────────────────────────────────
     path("subscription/plans/",               views.list_subscription_plans, name="subscription_plans"),
     path("subscription/upgrade/",             views.subscription_upgrade,    name="subscription_upgrade"),
+    path("subscription/payment-history/",     views.payment_history,         name="payment_history"),
 
     # ── Notifications ────────────────────────────────────────────────────────
     path("notifications/",                    views.list_notifications,         name="list_notifications"),

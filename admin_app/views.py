@@ -18,6 +18,8 @@ from .serializers import (
     AdminUserListSerializer, AdminSetSubscriptionSerializer,
 )
 from auth_app.models import User
+from deals_app.models import Deal
+from deals_app.serializers import AdminDealSerializer, FeatureDealSerializer
 from core.messages import get_message
 from core.decorators import admin_required
 
@@ -362,6 +364,83 @@ def ban_user(request, user_id):
     user.save(update_fields=["is_banned"])
     msg_key = "user_banned" if user.is_banned else "user_unbanned"
     return _ok(data={"is_banned": user.is_banned}, msg_key=msg_key, lang=lang)
+
+
+@extend_schema(
+    tags=["Admin — Deals"],
+    summary="List all deals (for featuring control)",
+    description=(
+        "Returns all deals across every business so an admin can choose which to feature.\n\n"
+        "Optional filters: `?featured=true|false`, `?search=` (title), `?is_active=true|false`.\n\n"
+        "**Requires:** Admin token."
+    ),
+    parameters=[
+        _LANG, _AUTH,
+        OpenApiParameter("featured", OpenApiTypes.STR, OpenApiParameter.QUERY, required=False,
+                         description="Filter by featured state: true / false."),
+        OpenApiParameter("is_active", OpenApiTypes.STR, OpenApiParameter.QUERY, required=False,
+                         description="Filter by active state: true / false."),
+        OpenApiParameter("search", OpenApiTypes.STR, OpenApiParameter.QUERY, required=False,
+                         description="Search by deal title."),
+    ],
+    responses={200: OpenApiResponse(response=AdminDealSerializer(many=True), description="Deals returned.")},
+)
+@api_view(["GET"])
+@admin_required
+def deals(request):
+    lang = _lang(request)
+    qs = Deal.objects.select_related("category", "business", "business__business_profile").order_by("-created_at")
+
+    featured = request.query_params.get("featured")
+    if featured is not None:
+        qs = qs.filter(is_featured=str(featured).lower() in ("1", "true", "yes"))
+
+    is_active = request.query_params.get("is_active")
+    if is_active is not None:
+        qs = qs.filter(is_active=str(is_active).lower() in ("1", "true", "yes"))
+
+    search = request.query_params.get("search")
+    if search:
+        qs = qs.filter(title__icontains=search)
+
+    return _ok(data=AdminDealSerializer(qs, many=True, context={"request": request}).data, lang=lang)
+
+
+@extend_schema(
+    tags=["Admin — Deals"],
+    summary="Set or toggle a deal's featured flag",
+    description=(
+        "Marks a deal as featured or not. Send `{\"is_featured\": true}` to set it explicitly, "
+        "or send an empty body to toggle the current value.\n\n"
+        "**Requires:** Admin token."
+    ),
+    request=FeatureDealSerializer,
+    parameters=[_LANG, _AUTH, OpenApiParameter("deal_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
+    responses={
+        200: OpenApiResponse(response=AdminDealSerializer, description="Updated."),
+        404: OpenApiResponse(description="Not found."),
+    },
+    examples=[
+        OpenApiExample("Set featured", request_only=True, value={"is_featured": True}),
+        OpenApiExample("Toggle", request_only=True, value={}),
+    ],
+)
+@api_view(["PATCH"])
+@parser_classes([JSONParser])
+@admin_required
+def feature_deal(request, deal_id):
+    lang = _lang(request)
+    try:
+        deal = Deal.objects.select_related("category", "business", "business__business_profile").get(id=deal_id)
+    except Deal.DoesNotExist:
+        return _err("not_found", lang, status.HTTP_404_NOT_FOUND)
+
+    if "is_featured" in request.data:
+        deal.is_featured = str(request.data.get("is_featured")).lower() in ("1", "true", "yes", "True")
+    else:
+        deal.is_featured = not deal.is_featured
+    deal.save(update_fields=["is_featured"])
+    return _ok(data=AdminDealSerializer(deal, context={"request": request}).data, lang=lang)
 
 
 @extend_schema(
