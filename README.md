@@ -151,10 +151,17 @@ To call protected endpoints from Swagger UI:
 
 ---
 
-## Real-time notifications (WebSocket)
+## Real-time events (WebSocket)
 
 The backend pushes live events over WebSocket in addition to persisting them as
 notification rows (so `GET /api/notifications/` is never out of sync).
+
+> **There is only ONE WebSocket endpoint** — `/ws/notifications/`. Despite the
+> name, it is a **single multiplexed socket** that streams *all* real-time
+> events: notifications, **redemptions**, and payment updates. You do **not**
+> open a separate socket per feature — you connect once and branch on the
+> frame's `type` field (see the tables below). Redemption events arrive as
+> `{"type": "redemption", ...}` frames on this same socket.
 
 > Real-time requires an **ASGI server** (Daphne). `python manage.py runserver`
 > automatically uses Daphne because `daphne` is the first app in `INSTALLED_APPS`.
@@ -166,6 +173,8 @@ notification rows (so `GET /api/notifications/` is never out of sync).
 ```
 ws://127.0.0.1:8000/ws/notifications/?token=<ACCESS_TOKEN>
 ```
+
+This one URL handles notifications, redemptions and payments alike.
 
 Authentication (JWT access token) is accepted three ways, in priority order:
 1. `?token=<access>` query parameter (works from browsers)
@@ -203,6 +212,41 @@ Every frame has the shape `{ "type": "<event>", "data": { ... } }`:
 | Admin approves payment (`.../review/`)           | the payer                  | `payment` + `notification` |
 | Admin rejects payment                            | the payer                  | `payment` + `notification` |
 | `POST /api/business/redeem/` (deal redeemed)     | the business **and** the student | `redemption` + `notification` (to both) |
+
+### Redemption event (example frame)
+
+When a business scans a QR via `POST /api/business/redeem/`, **both** the
+business's and the student's open sockets receive:
+
+```json
+{
+  "type": "redemption",
+  "data": {
+    "redemption_id": "8c1e…",
+    "student_name": "WS Tester",
+    "business_name": "WS Cafe",
+    "deal_name": "WS Espresso",
+    "deal_id": "71e8…",
+    "status": "VERIFIED",
+    "timestamp": "2026-07-05T12:00:00Z"
+  }
+}
+```
+
+Client-side you branch on `type` — same socket, no extra connection:
+
+```js
+const ws = new WebSocket(`ws://127.0.0.1:8000/ws/notifications/?token=${accessToken}`);
+ws.onmessage = (e) => {
+  const { type, data } = JSON.parse(e.data);
+  switch (type) {
+    case "redemption":   updateRedemptionScreen(data); break; // deal scanned live
+    case "notification": addNotification(data);        break;
+    case "payment":      updateSubscription(data);      break;
+    case "connection":   console.log("unread:", data.unread_count); break;
+  }
+};
+```
 
 ### Quick WebSocket smoke test (Python)
 
