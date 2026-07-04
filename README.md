@@ -195,14 +195,68 @@ Every frame has the shape `{ "type": "<event>", "data": { ... } }`:
 | `notification` | A new persisted notification (serialized row + event `extra`)    |
 | `redemption`   | Real-time redemption event (sent to both business and student)   |
 | `payment`      | Payment status change (pending / approved / rejected)            |
+| `redeem_result`| Reply to a business's `redeem` request (ack for the scan screen) |
 | `pong`         | Reply to a client `ping`                                         |
 
 ### Frames (client → server)
 
-| Send                                  | Effect                                    |
-| ------------------------------------- | ----------------------------------------- |
-| `{"type": "ping"}`                    | Server replies `{"type": "pong"}`         |
-| `{"type": "mark_read", "id": "<uuid>"}` | Marks that notification read            |
+| Send                                     | Effect                                    |
+| ---------------------------------------- | ----------------------------------------- |
+| `{"type": "ping"}`                       | Server replies `{"type": "pong"}`         |
+| `{"type": "mark_read", "id": "<uuid>"}`  | Marks that notification read              |
+| `{"type": "redeem", "qr_token": "<t>"}`  | **Business only.** Redeems a scanned QR live (see below) |
+
+### Redeeming a QR over the socket (live scan screen)
+
+The mobile business app should redeem **through the WebSocket** so the scan
+screen updates instantly — no HTTP refresh. The REST endpoint
+`POST /api/business/redeem/` still exists and runs identical logic, but the
+socket path avoids a round-trip and reuses the already-open connection.
+
+Business sends:
+
+```json
+{ "type": "redeem", "qr_token": "SdWWu6-iGiRJOzjt13Lc8Rfise…" }
+```
+
+Server replies **on the same socket** with an immediate ack:
+
+```json
+{
+  "type": "redeem_result",
+  "data": {
+    "ok": true,
+    "code": "success",
+    "message": "Redemption successful.",
+    "redemption": {
+      "redemption_id": "8c1e…", "student_name": "WS Tester",
+      "business_name": "WS Cafe", "deal_name": "WS Espresso",
+      "deal_id": "71e8…", "status": "VERIFIED", "timestamp": "…"
+    }
+  }
+}
+```
+
+On failure `ok` is `false` and `code` is one of `not_found`, `used`, `expired`,
+`wrong_business`, `no_subscription`, `forbidden` (non-business), or
+`validation_error` (missing token) — with a human-readable `message`.
+
+On success the usual `redemption` + `notification` frames are **also** broadcast
+to both the business and the student, so any other open screen updates too.
+
+```js
+// business scan screen
+scanner.onScan = (qrToken) => ws.send(JSON.stringify({ type: "redeem", qr_token: qrToken }));
+
+ws.onmessage = (e) => {
+  const { type, data } = JSON.parse(e.data);
+  if (type === "redeem_result") {
+    data.ok ? showSuccess(data.redemption) : showError(data.message);
+  } else if (type === "redemption") {
+    prependToActivityFeed(data);   // live dashboard/list update
+  }
+};
+```
 
 ### Which events fire
 
@@ -331,7 +385,7 @@ Authenticated endpoints require `Authorization: Bearer <access_token>`.
 | PATCH  | `/api/business/offers/<id>/toggle/`        | Toggle `is_active` on an offer                                           |
 | GET    | `/api/business/dashboard/`                 | Dashboard metrics (today's redemptions, trend, active offers, activity)  |
 | GET    | `/api/business/analytics/?period=7d`       | Analytics (`period`: `7d` / `30d` / `all`)                               |
-| POST   | `/api/business/redeem/`                    | Scan & redeem a QR token                                                 |
+| POST   | `/api/business/redeem/`                    | Scan & redeem a QR token (REST). **Prefer the WebSocket `redeem` action** for a live scan screen — see [Redeeming a QR over the socket](#redeeming-a-qr-over-the-socket-live-scan-screen). |
 
 ### Notifications
 | Method | Path                                    | Purpose                       |

@@ -31,7 +31,7 @@ from core.decorators import (
 from core.messages import get_message
 
 from .models import Deal, Favorite, RedemptionToken, Redemption, Notification
-from .services import notify, send_realtime
+from .services import notify, send_realtime, redeem_token
 from .serializers import (
     PublicCategorySerializer,
     DealListSerializer,
@@ -764,86 +764,20 @@ def business_analytics(request):
 @api_view(["POST"])
 @business_required
 def redeem_qr(request):
+    """
+    REST redemption. Kept for compatibility; the mobile app should prefer the
+    WebSocket ``redeem`` action (same logic) so the scan screen updates live
+    without an HTTP round-trip. Both paths share ``services.redeem_token``.
+    """
     lang = _lang(request)
     serializer = RedeemSerializer(data=request.data)
     if not serializer.is_valid():
         return _err("validation_error", lang, errors=serializer.errors)
 
-    qr_token = serializer.validated_data["qr_token"]
-    try:
-        token = (
-            RedemptionToken.objects
-                .select_related("user", "user__client_profile", "deal")
-                .get(token=qr_token)
-        )
-    except RedemptionToken.DoesNotExist:
-        return _err(message="QR token not found.", lang=lang, http_status=status.HTTP_400_BAD_REQUEST)
-
-    if token.is_used:
-        return _err(message="QR token already used.", lang=lang, http_status=status.HTTP_400_BAD_REQUEST)
-    if timezone.now() >= token.expires_at:
-        return _err(message="QR token has expired.", lang=lang, http_status=status.HTTP_400_BAD_REQUEST)
-    if token.deal.business_id != request.user.id:
-        return _err(message="This deal does not belong to your business.", lang=lang,
-                    http_status=status.HTTP_403_FORBIDDEN)
-    if token.user.subscription_status != "ACTIVE":
-        return _err(message="Student does not hold an active WINDEAL+ subscription.", lang=lang,
-                    http_status=status.HTTP_402_PAYMENT_REQUIRED)
-
-    with transaction.atomic():
-        token.is_used = True
-        token.used_at = timezone.now()
-        token.save(update_fields=["is_used", "used_at"])
-        redemption = Redemption.objects.create(
-            business=request.user, student=token.user, deal=token.deal,
-            token=token, status="VERIFIED",
-        )
-
-    student_name = (
-        token.user.client_profile.full_name
-        if hasattr(token.user, "client_profile") and token.user.client_profile.full_name
-        else token.user.phone
-    )
-    business_name = (
-        request.user.business_profile.business_name
-        if hasattr(request.user, "business_profile") and request.user.business_profile.business_name
-        else request.user.phone
-    )
-
-    event_data = {
-        "redemption_id": str(redemption.id),
-        "student_name":  student_name,
-        "business_name": business_name,
-        "deal_name":     token.deal.title,
-        "deal_id":       str(token.deal.id),
-        "status":        redemption.status,
-        "timestamp":     redemption.created_at,
-    }
-
-    # ── Real-time: push the redemption to the business dashboard live ──────────
-    send_realtime(request.user, "redemption", event_data)
-    # ── Notify both parties (persisted + live) ────────────────────────────────
-    notify(
-        request.user,
-        title="New redemption",
-        body=f"{student_name} redeemed '{token.deal.title}'.",
-        ntype="redemption",
-        extra={"redemption": event_data},
-    )
-    notify(
-        token.user,
-        title="Deal redeemed",
-        body=f"You redeemed '{token.deal.title}' at {business_name}. Enjoy!",
-        ntype="redemption",
-        extra={"redemption": event_data},
-    )
-    send_realtime(token.user, "redemption", event_data)
-
-    return _ok(
-        data=event_data,
-        message="Redemption successful.",
-        lang=lang,
-    )
+    result = redeem_token(request.user, serializer.validated_data["qr_token"])
+    if not result["ok"]:
+        return _err(message=result["message"], lang=lang, http_status=result["http_status"])
+    return _ok(data=result["data"], message=result["message"], lang=lang)
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗

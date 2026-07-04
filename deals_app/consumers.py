@@ -19,6 +19,10 @@ Event types currently emitted:
 Inbound frames (client → server) supported:
   - ``{"type": "ping"}``           → server replies ``{"type": "pong"}``
   - ``{"type": "mark_read", "id": "<uuid>"}`` → marks a notification read
+  - ``{"type": "redeem", "qr_token": "<token>"}`` → **business only.** Redeems a
+    scanned QR token live and replies with ``{"type": "redeem_result", ...}``.
+    On success the standard ``redemption`` + ``notification`` frames are also
+    broadcast to both the business and the student.
 """
 import json
 
@@ -67,8 +71,33 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         elif action == "mark_read":
             ok = await self._mark_read(payload.get("id"))
             await self.send_json({"type": "mark_read", "data": {"id": payload.get("id"), "ok": ok}})
+        elif action == "redeem":
+            await self._handle_redeem(payload.get("qr_token"))
         else:
             await self.send_json({"type": "error", "data": {"detail": "Unknown action."}})
+
+    # ── Redeem a QR token over the socket (business only) ────────────────────────
+    async def _handle_redeem(self, qr_token):
+        if self.user.role != "business":
+            await self.send_json({"type": "redeem_result", "data": {
+                "ok": False, "code": "forbidden",
+                "message": "Only business accounts can redeem QR codes.",
+            }})
+            return
+        if not qr_token:
+            await self.send_json({"type": "redeem_result", "data": {
+                "ok": False, "code": "validation_error",
+                "message": "qr_token is required.",
+            }})
+            return
+
+        result = await self._do_redeem(qr_token)
+        await self.send_json({"type": "redeem_result", "data": {
+            "ok":         result["ok"],
+            "code":       result["code"],
+            "message":    result["message"],
+            "redemption": result["data"],
+        }})
 
     # ── Group event handlers (server → client) ──────────────────────────────────
     # Names map from the "type" key used in group_send (dots become underscores).
@@ -98,3 +127,8 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             return False
         updated = Notification.objects.filter(id=notification_id, user=self.user).update(is_read=True)
         return bool(updated)
+
+    @database_sync_to_async
+    def _do_redeem(self, qr_token):
+        from .services import redeem_token
+        return redeem_token(self.user, qr_token)
