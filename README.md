@@ -19,7 +19,8 @@ This document covers running the backend locally on **macOS** (Apple Silicon or 
 | Database (prod)  | PostgreSQL (via `psycopg2-binary` + `dj-database-url`)     |
 | File storage     | Local `media/` (uploaded images, receipts)                 |
 | Static files     | WhiteNoise                                                 |
-| WSGI server      | Gunicorn                                                   |
+| Real-time        | Django Channels + Daphne (WebSockets, JWT-authed)          |
+| ASGI server      | Daphne (serves HTTP **and** WebSockets)                     |
 
 ---
 
@@ -29,7 +30,7 @@ This document covers running the backend locally on **macOS** (Apple Silicon or 
 | ------------ | ------------------------------------------------------------------------------ |
 | `auth_app`   | Users (client / business / admin), profiles, JWT, passwordless login, payment receipts |
 | `admin_app`  | Categories, subscription plans, payment review, user management                |
-| `deals_app`  | Deals/offers, favorites, QR redemption, notifications, business dashboard      |
+| `deals_app`  | Deals/offers, favorites, QR redemption, notifications, business dashboard, **WebSocket consumer + real-time services** |
 | `core`       | Shared decorators, exception handler, localised messages (`en` / `ar` / `fr`)  |
 
 ---
@@ -150,6 +151,88 @@ To call protected endpoints from Swagger UI:
 
 ---
 
+## Real-time notifications (WebSocket)
+
+The backend pushes live events over WebSocket in addition to persisting them as
+notification rows (so `GET /api/notifications/` is never out of sync).
+
+> Real-time requires an **ASGI server** (Daphne). `python manage.py runserver`
+> automatically uses Daphne because `daphne` is the first app in `INSTALLED_APPS`.
+> In production run `./start.sh` (Daphne) — **not** Gunicorn/WSGI, which cannot
+> serve WebSockets.
+
+### Connecting
+
+```
+ws://127.0.0.1:8000/ws/notifications/?token=<ACCESS_TOKEN>
+```
+
+Authentication (JWT access token) is accepted three ways, in priority order:
+1. `?token=<access>` query parameter (works from browsers)
+2. `Authorization: Bearer <access>` header (non-browser clients)
+3. `Sec-WebSocket-Protocol: access_token, <access>`
+
+A bad/expired token, a banned, or a deactivated account is rejected with an
+HTTP `403` handshake. On success the server immediately sends a `connection`
+frame with the current unread count.
+
+### Frames (server → client)
+
+Every frame has the shape `{ "type": "<event>", "data": { ... } }`:
+
+| `type`         | When                                                             |
+| -------------- | ---------------------------------------------------------------- |
+| `connection`   | On connect — `{status, user_id, role, unread_count}`             |
+| `notification` | A new persisted notification (serialized row + event `extra`)    |
+| `redemption`   | Real-time redemption event (sent to both business and student)   |
+| `payment`      | Payment status change (pending / approved / rejected)            |
+| `pong`         | Reply to a client `ping`                                         |
+
+### Frames (client → server)
+
+| Send                                  | Effect                                    |
+| ------------------------------------- | ----------------------------------------- |
+| `{"type": "ping"}`                    | Server replies `{"type": "pong"}`         |
+| `{"type": "mark_read", "id": "<uuid>"}` | Marks that notification read            |
+
+### Which events fire
+
+| Trigger (HTTP)                                   | Who gets notified          | Types emitted              |
+| ------------------------------------------------ | -------------------------- | -------------------------- |
+| `POST /api/subscription/upgrade/` (or payment upload) | the payer            | `payment` + `notification` |
+| Admin approves payment (`.../review/`)           | the payer                  | `payment` + `notification` |
+| Admin rejects payment                            | the payer                  | `payment` + `notification` |
+| `POST /api/business/redeem/` (deal redeemed)     | the business **and** the student | `redemption` + `notification` (to both) |
+
+### Quick WebSocket smoke test (Python)
+
+```python
+import asyncio, json, websockets
+
+TOKEN = "<paste an access token>"
+
+async def main():
+    uri = f"ws://127.0.0.1:8000/ws/notifications/?token={TOKEN}"
+    async with websockets.connect(uri, origin="http://127.0.0.1:8000") as ws:
+        print("connected:", await ws.recv())
+        await ws.send(json.dumps({"type": "ping"}))
+        print("pong:", await ws.recv())
+        # now trigger a redemption / payment from another client and watch:
+        while True:
+            print("event:", await ws.recv())
+
+asyncio.run(main())
+```
+
+Then, in another terminal, redeem a deal or approve a payment — the frames arrive live.
+
+> **Scaling note:** the default `CHANNEL_LAYERS` uses `InMemoryChannelLayer`,
+> which only works within a **single** process. For multiple Daphne/worker
+> processes, install `channels-redis` and point `CHANNEL_LAYERS` at Redis
+> (a commented example is in `Windeal/settings.py`).
+
+---
+
 ## Endpoint summary
 
 All endpoints are JSON unless flagged as `multipart/form-data` (for file uploads).
@@ -211,6 +294,7 @@ Authenticated endpoints require `Authorization: Bearer <access_token>`.
 | ------ | --------------------------------------- | ----------------------------- |
 | GET    | `/api/notifications/`                   | List current user notifications |
 | PATCH  | `/api/notifications/<id>/read/`         | Mark a notification as read   |
+| WS     | `/ws/notifications/?token=<access>`     | Real-time notification/redemption/payment stream (see [Real-time notifications](#real-time-notifications-websocket)) |
 
 ### Admin (admin role required)
 | Method        | Path                                                  | Purpose                                  |
@@ -300,14 +384,19 @@ python manage.py test deals_app
 
 ---
 
-## Production-ish run on macOS (Gunicorn)
+## Production-ish run on macOS (Daphne / ASGI)
+
+Because the app serves WebSockets, run it under **Daphne** (ASGI), not Gunicorn:
 
 ```sh
 python manage.py collectstatic --no-input
-gunicorn Windeal.wsgi:application --bind 127.0.0.1:8000 --workers 3
+daphne -b 0.0.0.0 -p 8000 Windeal.asgi:application
 ```
 
-(Equivalent to `start.sh` used in the deploy.)
+(This is exactly what `start.sh` runs in the deploy.)
+
+> Gunicorn/WSGI (`gunicorn Windeal.wsgi:application`) still works for the REST
+> API but **drops WebSocket connections** — use Daphne if you need real-time.
 
 ---
 

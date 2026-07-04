@@ -20,6 +20,7 @@ from .serializers import (
 from auth_app.models import User
 from core.messages import get_message
 from core.decorators import admin_required
+from deals_app.services import notify, send_realtime
 
 _LANG = OpenApiParameter(name="Accept-Language", location=OpenApiParameter.HEADER, description="en / ar / fr", required=False, type=OpenApiTypes.STR)
 _AUTH = OpenApiParameter(name="Authorization", location=OpenApiParameter.HEADER, description="Bearer <admin_token>", required=True, type=OpenApiTypes.STR)
@@ -254,6 +255,22 @@ def review_payment(request, payment_id):
             user.subscription_end    = end
             user.current_plan        = plan
             user.save(update_fields=["subscription_status", "subscription_end", "current_plan"])
+
+            payment_data = {
+                "payment_id":          str(payment.id),
+                "status":              payment.status,
+                "plan":                plan.name if plan else None,
+                "subscription_status": user.subscription_status,
+                "subscription_end":    end,
+            }
+            send_realtime(user, "payment", payment_data)
+            notify(
+                user,
+                title="Subscription activated",
+                body=f"Your WINDEAL+ subscription ('{plan.name}') is now active.",
+                ntype="subscription",
+                extra={"payment": payment_data},
+            )
             return _ok(data={"payment_id": str(payment.id), "subscription_end": end}, msg_key="payment_approved", lang=lang)
 
         payment.status           = "REJECTED"
@@ -263,6 +280,21 @@ def review_payment(request, payment_id):
         if user.subscription_status == "PENDING":
             user.subscription_status = "FREE"
             user.save(update_fields=["subscription_status"])
+
+        payment_data = {
+            "payment_id":          str(payment.id),
+            "status":              payment.status,
+            "rejection_reason":    payment.rejection_reason,
+            "subscription_status": user.subscription_status,
+        }
+        send_realtime(user, "payment", payment_data)
+        notify(
+            user,
+            title="Payment rejected",
+            body=payment.rejection_reason or "Your payment could not be verified. Please try again.",
+            ntype="payment",
+            extra={"payment": payment_data},
+        )
         return _ok(msg_key="payment_rejected", lang=lang)
 
 

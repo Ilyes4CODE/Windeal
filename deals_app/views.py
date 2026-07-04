@@ -31,6 +31,7 @@ from core.decorators import (
 from core.messages import get_message
 
 from .models import Deal, Favorite, RedemptionToken, Redemption, Notification
+from .services import notify, send_realtime
 from .serializers import (
     PublicCategorySerializer,
     DealListSerializer,
@@ -656,14 +657,43 @@ def redeem_qr(request):
         if hasattr(token.user, "client_profile") and token.user.client_profile.full_name
         else token.user.phone
     )
+    business_name = (
+        request.user.business_profile.business_name
+        if hasattr(request.user, "business_profile") and request.user.business_profile.business_name
+        else request.user.phone
+    )
+
+    event_data = {
+        "redemption_id": str(redemption.id),
+        "student_name":  student_name,
+        "business_name": business_name,
+        "deal_name":     token.deal.title,
+        "deal_id":       str(token.deal.id),
+        "status":        redemption.status,
+        "timestamp":     redemption.created_at,
+    }
+
+    # ── Real-time: push the redemption to the business dashboard live ──────────
+    send_realtime(request.user, "redemption", event_data)
+    # ── Notify both parties (persisted + live) ────────────────────────────────
+    notify(
+        request.user,
+        title="New redemption",
+        body=f"{student_name} redeemed '{token.deal.title}'.",
+        ntype="redemption",
+        extra={"redemption": event_data},
+    )
+    notify(
+        token.user,
+        title="Deal redeemed",
+        body=f"You redeemed '{token.deal.title}' at {business_name}. Enjoy!",
+        ntype="redemption",
+        extra={"redemption": event_data},
+    )
+    send_realtime(token.user, "redemption", event_data)
+
     return _ok(
-        data={
-            "redemption_id": str(redemption.id),
-            "student_name":  student_name,
-            "deal_name":     token.deal.title,
-            "deal_id":       str(token.deal.id),
-            "timestamp":     redemption.created_at,
-        },
+        data=event_data,
         message="Redemption successful.",
         lang=lang,
     )
@@ -735,13 +765,26 @@ def subscription_upgrade(request):
     )
     user.subscription_status = "PENDING"
     user.save(update_fields=["subscription_status"])
+
+    payment_data = {
+        "payment_id":          str(payment.id),
+        "status":              payment.status,
+        "plan":                plan.name,
+        "amount":              str(payment.amount),
+        "subscription_status": user.subscription_status,
+    }
+    # ── Real-time: payment now pending review ─────────────────────────────────
+    send_realtime(user, "payment", payment_data)
+    notify(
+        user,
+        title="Payment received",
+        body=f"Your payment for '{plan.name}' is under review. Verification in progress (12-24h).",
+        ntype="payment",
+        extra={"payment": payment_data},
+    )
+
     return _ok(
-        data={
-            "payment_id":  str(payment.id),
-            "status":      payment.status,
-            "plan":        plan.name,
-            "amount":      str(payment.amount),
-        },
+        data=payment_data,
         message="Verification in progress (12-24h).",
         http_status=status.HTTP_201_CREATED,
         lang=lang,

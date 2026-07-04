@@ -12,12 +12,16 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
+    # daphne must come first so it overrides the default runserver with the
+    # ASGI/WebSocket-aware development server.
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "channels",
     "rest_framework",
     "rest_framework_simplejwt",
     "rest_framework_simplejwt.token_blacklist",
@@ -60,6 +64,25 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "Windeal.wsgi.application"
+ASGI_APPLICATION = "Windeal.asgi.application"
+
+# ── Channels (WebSockets) ─────────────────────────────────────────────────────
+# In-memory layer is fine for local dev and a single-process deployment.
+# For multi-process / horizontally-scaled production, switch to Redis:
+#
+#   CHANNEL_LAYERS = {
+#       "default": {
+#           "BACKEND": "channels_redis.core.RedisChannelLayer",
+#           "CONFIG": {"hosts": [("127.0.0.1", 6379)]},
+#       }
+#   }
+#
+# (requires: pip install channels-redis)
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    }
+}
 
 DATABASES = {
     "default": {

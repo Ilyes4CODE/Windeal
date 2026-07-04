@@ -702,9 +702,26 @@ def upload_payment(request):
     user.subscription_status = "PENDING"
     user.save(update_fields=["subscription_status"])
 
+    payment_data = {
+        "payment_id":          str(payment.id),
+        "status":              payment.status,
+        "plan":                plan.name,
+        "amount":              str(payment.amount),
+        "subscription_status": user.subscription_status,
+    }
+    # Real-time: payment now pending review (persisted notification + live push)
+    from deals_app.services import notify, send_realtime
+    send_realtime(user, "payment", payment_data)
+    notify(
+        user,
+        title="Payment received",
+        body=f"Your payment for '{plan.name}' is under review. Awaiting admin approval.",
+        ntype="payment",
+        extra={"payment": payment_data},
+    )
+
     return _ok(
-        data={"payment_id": str(payment.id), "status": payment.status,
-              "plan": plan.name, "amount": str(payment.amount)},
+        data=payment_data,
         msg_key="payment_uploaded",
         lang=lang,
         http_status=status.HTTP_201_CREATED,
