@@ -361,6 +361,7 @@ Authenticated endpoints require `Authorization: Bearer <access_token>`.
 | ------ | --------------------------------- | ---------------------------------------------------------------- |
 | GET    | `/api/subscription/plans/`        | List public plans (filtered by user role)                        |
 | POST   | `/api/subscription/upgrade/`      | Upload receipt → status becomes `PENDING` (multipart/form-data)  |
+| GET    | `/api/subscription/payment-history/` | Current user's payment history (date, amount, method, plan, status) |
 | POST   | `/api/auth/payment/upload/`       | Alternative payment upload (legacy path)                         |
 | GET    | `/api/auth/subscription/status/`  | Get current subscription state                                   |
 
@@ -368,7 +369,9 @@ Authenticated endpoints require `Authorization: Bearer <access_token>`.
 | Method | Path                              | Purpose                                                                                |
 | ------ | --------------------------------- | -------------------------------------------------------------------------------------- |
 | GET    | `/api/categories/`                | List active deal categories                                                            |
-| GET    | `/api/deals/`                     | List deals (filters: `category_id`, `search`, `lat`, `lng`; paginated)                 |
+| GET    | `/api/deals/`                     | List deals (filters: `category_id`, `search`, `featured`, `lat`, `lng`; paginated)     |
+| GET    | `/api/deals/featured/`            | Featured-deals home section (admin-flagged, highest rating first; `category_id`, `limit`) |
+| GET    | `/api/deals/nearby/`              | Deals near a point — **requires** `lat` & `lng`; optional `km` radius, `category_id`, `limit` (nearest first) |
 | GET    | `/api/deals/<id>/`                | Retrieve one deal                                                                      |
 | POST   | `/api/deals/favorites/toggle/`    | Add or remove the deal from favorites                                                  |
 | GET    | `/api/deals/favorites/`           | List the current user's favorite deals                                                 |
@@ -392,7 +395,7 @@ Authenticated endpoints require `Authorization: Bearer <access_token>`.
 | ------ | --------------------------------------- | ----------------------------- |
 | GET    | `/api/notifications/`                   | List current user notifications |
 | PATCH  | `/api/notifications/<id>/read/`         | Mark a notification as read   |
-| WS     | `/ws/notifications/?token=<access>`     | Real-time notification/redemption/payment stream (see [Real-time notifications](#real-time-notifications-websocket)) |
+| WS     | `/ws/notifications/?token=<access>`     | Real-time notification / **redemption** / payment stream — single multiplexed socket (see [Real-time events](#real-time-events-websocket)) |
 
 ### Admin (admin role required)
 | Method        | Path                                                  | Purpose                                  |
@@ -404,6 +407,8 @@ Authenticated endpoints require `Authorization: Bearer <access_token>`.
 | GET           | `/api/admin/payments/pending/`                        | List pending payment receipts            |
 | GET           | `/api/admin/payments/all/`                            | List all payments                        |
 | POST          | `/api/admin/payments/<id>/review/`                    | Approve / reject a payment               |
+| GET           | `/api/admin/deals/`                                   | List all deals across businesses (filters `featured`, `is_active`, `search`) |
+| PATCH         | `/api/admin/deals/<id>/feature/`                      | Set/toggle a deal's `is_featured` flag   |
 | GET           | `/api/admin/users/`                                   | List users (filter `?role=...`)          |
 | PATCH         | `/api/admin/users/<id>/toggle/`                       | Toggle `is_active`                       |
 | PATCH         | `/api/admin/users/<id>/ban/`                          | Toggle `is_banned`                       |
