@@ -38,6 +38,8 @@ class Deal(models.Model):
                         help_text="Average rating 0.00 - 5.00.")
     expiry_date     = models.DateField(null=True, blank=True)
     is_active       = models.BooleanField(default=True)
+    is_featured     = models.BooleanField(default=False,
+                        help_text="Admin-controlled flag. Featured deals appear in the Featured section.")
 
     created_at      = models.DateTimeField(auto_now_add=True)
     updated_at      = models.DateTimeField(auto_now=True)

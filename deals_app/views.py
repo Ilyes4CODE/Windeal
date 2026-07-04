@@ -42,6 +42,7 @@ from .serializers import (
     GenerateCodeSerializer,
     RedeemSerializer,
     ToggleFavoriteSerializer,
+    PaymentHistorySerializer,
 )
 
 
@@ -155,6 +156,10 @@ def list_deals(request):
             | Q(business__business_profile__business_name__icontains=search)
         )
 
+    featured = request.query_params.get("featured")
+    if str(featured).lower() in ("1", "true", "yes"):
+        qs = qs.filter(is_featured=True).order_by("-rating")
+
     deals = list(qs)
 
     lat = request.query_params.get("lat")
@@ -203,6 +208,142 @@ def list_deals(request):
         },
         lang=lang,
     )
+
+
+@extend_schema(
+    tags=["Client — Deals"],
+    summary="Featured deals section",
+    description=(
+        "Returns the **Featured Deals** section — a fixed home-screen section.\n\n"
+        "Deals flagged as featured by an admin (`is_featured=true`) are returned first, "
+        "ordered by rating (highest first).\n\n"
+        "**Auth required.**"
+    ),
+    parameters=[
+        _LANG, _AUTH,
+        OpenApiParameter("category_id", OpenApiTypes.UUID, OpenApiParameter.QUERY, required=False),
+        OpenApiParameter("limit", OpenApiTypes.INT, OpenApiParameter.QUERY, required=False,
+                         description="Max number of deals to return (default 20)."),
+    ],
+    responses={200: OpenApiResponse(
+        response=DealListSerializer(many=True),
+        description="Featured deals returned, highest rating first.",
+    )},
+)
+@api_view(["GET"])
+@login_required
+def featured_deals(request):
+    lang = _lang(request)
+    qs = (
+        Deal.objects.filter(is_active=True, is_featured=True)
+            .select_related("category", "business", "business__business_profile")
+            .order_by("-rating", "-created_at")
+    )
+    category_id = request.query_params.get("category_id")
+    if category_id:
+        qs = qs.filter(category_id=category_id)
+
+    try:
+        limit = max(1, min(100, int(request.query_params.get("limit", 20))))
+    except (TypeError, ValueError):
+        limit = 20
+    deals = list(qs[:limit])
+
+    fav_ids = set(
+        Favorite.objects.filter(user=request.user, deal__in=deals).values_list("deal_id", flat=True)
+    )
+    data = DealListSerializer(deals, many=True,
+                              context={"request": request, "favorite_ids": fav_ids}).data
+    return _ok(data=data, lang=lang)
+
+
+@extend_schema(
+    tags=["Client — Deals"],
+    summary="Nearby deals section",
+    description=(
+        "Returns the **Nearby Deals** section — a fixed home-screen section.\n\n"
+        "The mobile app sends the user's `lat` and `lng`. The backend computes the distance "
+        "to each deal's business and returns deals sorted by nearest first, each annotated "
+        "with `distance_km`.\n\n"
+        "Pass `km` to only return deals within that radius (e.g. `km=10` → within 10 km). "
+        "Deals whose business has no coordinates are excluded.\n\n"
+        "**Auth required.**"
+    ),
+    parameters=[
+        _LANG, _AUTH,
+        OpenApiParameter("lat", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=True,
+                         description="User latitude."),
+        OpenApiParameter("lng", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=True,
+                         description="User longitude."),
+        OpenApiParameter("km", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=False,
+                         description="Radius filter in kilometres. Only deals within this distance are returned."),
+        OpenApiParameter("category_id", OpenApiTypes.UUID, OpenApiParameter.QUERY, required=False),
+        OpenApiParameter("limit", OpenApiTypes.INT, OpenApiParameter.QUERY, required=False,
+                         description="Max number of deals to return (default 50)."),
+    ],
+    responses={
+        200: OpenApiResponse(response=DealListSerializer(many=True),
+                             description="Nearby deals returned, nearest first."),
+        400: OpenApiResponse(description="lat and lng are required and must be valid numbers."),
+    },
+)
+@api_view(["GET"])
+@login_required
+def nearby_deals(request):
+    lang = _lang(request)
+    try:
+        lat = float(request.query_params.get("lat"))
+        lng = float(request.query_params.get("lng"))
+    except (TypeError, ValueError):
+        return _err(message="lat and lng query parameters are required and must be numbers.",
+                    lang=lang, http_status=status.HTTP_400_BAD_REQUEST)
+
+    radius_km = None
+    raw_km = request.query_params.get("km")
+    if raw_km not in (None, ""):
+        try:
+            radius_km = float(raw_km)
+        except ValueError:
+            return _err(message="km must be a number.", lang=lang,
+                        http_status=status.HTTP_400_BAD_REQUEST)
+
+    qs = Deal.objects.filter(is_active=True).select_related(
+        "category", "business", "business__business_profile")
+    category_id = request.query_params.get("category_id")
+    if category_id:
+        qs = qs.filter(category_id=category_id)
+
+    # Compute distance for every deal that has coordinates.
+    distances = {}
+    candidates = []
+    for d in qs:
+        bp = getattr(d.business, "business_profile", None)
+        if not bp or bp.latitude is None or bp.longitude is None:
+            continue
+        km = _haversine_km(lat, lng, bp.latitude, bp.longitude)
+        if km is None:
+            continue
+        if radius_km is not None and km > radius_km:
+            continue
+        distances[d.id] = km
+        candidates.append(d)
+
+    candidates.sort(key=lambda d: distances[d.id])
+
+    try:
+        limit = max(1, min(200, int(request.query_params.get("limit", 50))))
+    except (TypeError, ValueError):
+        limit = 50
+    candidates = candidates[:limit]
+
+    fav_ids = set(
+        Favorite.objects.filter(user=request.user, deal__in=candidates).values_list("deal_id", flat=True)
+    )
+    data = DealListSerializer(
+        candidates, many=True,
+        context={"request": request, "favorite_ids": fav_ids, "distances": distances},
+    ).data
+    return _ok(data={"radius_km": radius_km, "count": len(data), "results": data}, lang=lang)
 
 
 @extend_schema(
@@ -390,6 +531,12 @@ def create_offer(request):
             category = Category.objects.get(id=cat_id, is_active=True)
         except Category.DoesNotExist:
             category = None
+
+    # DRF's BooleanField treats a missing field in multipart/form-data as False
+    # (HTML checkbox semantics), which would silently create inactive offers.
+    # Honour the model default (active) when the client did not send is_active.
+    if "is_active" not in request.data:
+        serializer.validated_data["is_active"] = True
 
     deal = serializer.save(business=request.user, category=category)
     return _ok(
@@ -762,6 +909,8 @@ def subscription_upgrade(request):
     payment = Payment.objects.create(
         user=user, plan=plan, amount=plan.price,
         receipt=data["receipt_image"], status="PENDING",
+        payment_method=data.get("payment_method", ""),
+        reference_number=data.get("reference_number", ""),
     )
     user.subscription_status = "PENDING"
     user.save(update_fields=["subscription_status"])
@@ -791,6 +940,61 @@ def subscription_upgrade(request):
     )
 
 
+@extend_schema(
+    tags=["Subscription"],
+    summary="Payment history",
+    description=(
+        "Returns the authenticated user's subscription payment history, newest first.\n\n"
+        "Each item contains:\n"
+        "- `id` — UUID of the payment\n"
+        "- `transaction_date` — ISO-8601 submission timestamp\n"
+        "- `amount` — paid amount\n"
+        "- `payment_method` — how the user paid (may be empty)\n"
+        "- `subscription_plan` — plan name\n"
+        "- `reference_number` — user-supplied reference (may be empty)\n"
+        "- `status` — `PENDING` · `APPROVED` · `REJECTED`\n\n"
+        "**Auth required (client/business).**"
+    ),
+    parameters=[_LANG, _AUTH],
+    responses={200: OpenApiResponse(
+        response=inline_serializer(
+            name="PaymentHistoryResponse",
+            fields={
+                "success": drf_serializers.BooleanField(default=True),
+                "data": PaymentHistorySerializer(many=True),
+            },
+        ),
+        description="Payment history returned.",
+        examples=[
+            OpenApiExample("History", value={
+                "success": True,
+                "data": [
+                    {
+                        "id": "3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                        "transaction_date": "2026-06-07T10:15:30Z",
+                        "amount": "550.00",
+                        "payment_method": "BaridiMob",
+                        "subscription_plan": "Monthly",
+                        "reference_number": "TX-99812",
+                        "status": "APPROVED",
+                    },
+                ],
+            }),
+        ],
+    )},
+)
+@api_view(["GET"])
+@login_required
+def payment_history(request):
+    lang = _lang(request)
+    qs = (
+        Payment.objects.filter(user=request.user)
+            .select_related("plan")
+            .order_by("-created_at")
+    )
+    return _ok(data=PaymentHistorySerializer(qs, many=True).data, lang=lang)
+
+
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                            NOTIFICATIONS                                 ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
@@ -798,9 +1002,53 @@ def subscription_upgrade(request):
 @extend_schema(
     tags=["Notifications"],
     summary="List current user's notifications",
-    description="Returns notifications for the authenticated user, newest first.\n\n**Auth required.**",
+    description=(
+        "Returns notifications for the authenticated user, newest first.\n\n"
+        "Each notification object contains:\n"
+        "- `id` — UUID of the notification\n"
+        "- `title` — short headline\n"
+        "- `body` — full message text (may be empty)\n"
+        "- `type` — one of `system`, `payment`, `subscription`, `deal`, `redemption`\n"
+        "- `is_read` — whether the user has read it\n"
+        "- `created_at` — ISO-8601 timestamp\n\n"
+        "**Auth required.**"
+    ),
     parameters=[_LANG, _AUTH],
-    responses={200: OpenApiResponse(description="Notifications returned.")},
+    responses={
+        200: OpenApiResponse(
+            response=inline_serializer(
+                name="NotificationListResponse",
+                fields={
+                    "success": drf_serializers.BooleanField(default=True),
+                    "data": NotificationSerializer(many=True),
+                },
+            ),
+            description="Notifications returned.",
+            examples=[
+                OpenApiExample("Notifications list", value={
+                    "success": True,
+                    "data": [
+                        {
+                            "id": "9b2f1c6e-3a4d-4c8e-9f1a-2b3c4d5e6f70",
+                            "title": "Payment approved",
+                            "body": "Your WINDEAL+ subscription is now active until 2026-07-07.",
+                            "type": "payment",
+                            "is_read": False,
+                            "created_at": "2026-06-07T10:15:30Z",
+                        },
+                        {
+                            "id": "1a2b3c4d-5e6f-4071-8a9b-0c1d2e3f4a5b",
+                            "title": "Welcome to WINDEAL",
+                            "body": "Browse local deals and redeem them with QR codes.",
+                            "type": "system",
+                            "is_read": True,
+                            "created_at": "2026-06-06T08:00:00Z",
+                        },
+                    ],
+                }),
+            ],
+        ),
+    },
 )
 @api_view(["GET"])
 @login_required
@@ -813,10 +1061,40 @@ def list_notifications(request):
 @extend_schema(
     tags=["Notifications"],
     summary="Mark a notification as read",
-    description="Sets `is_read=true` on one notification owned by the authenticated user.\n\n**Auth required.**",
+    description=(
+        "Sets `is_read=true` on one notification owned by the authenticated user "
+        "and returns the updated notification object.\n\n"
+        "The returned object contains: `id`, `title`, `body`, `type`, `is_read`, `created_at`.\n\n"
+        "**Auth required.**"
+    ),
     request=None,
     parameters=[_LANG, _AUTH, OpenApiParameter("notification_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
-    responses={200: OpenApiResponse(description="Updated."), 404: OpenApiResponse(description="Not found.")},
+    responses={
+        200: OpenApiResponse(
+            response=inline_serializer(
+                name="NotificationReadResponse",
+                fields={
+                    "success": drf_serializers.BooleanField(default=True),
+                    "data": NotificationSerializer(),
+                },
+            ),
+            description="Updated.",
+            examples=[
+                OpenApiExample("Marked read", value={
+                    "success": True,
+                    "data": {
+                        "id": "9b2f1c6e-3a4d-4c8e-9f1a-2b3c4d5e6f70",
+                        "title": "Payment approved",
+                        "body": "Your WINDEAL+ subscription is now active until 2026-07-07.",
+                        "type": "payment",
+                        "is_read": True,
+                        "created_at": "2026-06-07T10:15:30Z",
+                    },
+                }),
+            ],
+        ),
+        404: OpenApiResponse(description="Not found."),
+    },
 )
 @api_view(["PATCH"])
 @login_required

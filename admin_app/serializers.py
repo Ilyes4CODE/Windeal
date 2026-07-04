@@ -122,6 +122,8 @@ class PaymentSerializer(serializers.ModelSerializer):
             "user",
             "plan",
             "amount",
+            "payment_method",
+            "reference_number",
             "receipt",
             "receipt_url",
             "status",
