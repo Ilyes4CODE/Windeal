@@ -331,6 +331,43 @@ Then, in another terminal, redeem a deal or approve a payment — the frames arr
 
 ---
 
+## Service coverage (`availability`)
+
+The three home-screen deal sections — **`/api/deals/featured/`**,
+**`/api/deals/nearby/`** and **`/api/deals/favorites/`** — return an
+`availability` boolean so the app can show a *"WINDEAL isn't in your area yet"*
+state.
+
+- The app sends the user's `lat` & `lng`.
+- `availability` is **`true`** if at least one **active offer** exists within
+  **80 km** of the user (nearest business ≤ 80 km).
+- `availability` is **`false`** when the nearest active offer is farther than
+  80 km — the user is in an unsupported area.
+- Either way the endpoint **still returns its deals** — `availability` is purely
+  an extra flag; it never filters the list.
+- If `lat`/`lng` are omitted, `availability` defaults to **`true`** (coverage
+  can't be determined, so the app isn't blocked).
+
+The coverage radius is `COVERAGE_RADIUS_KM = 80.0` in `deals_app/views.py`.
+
+**Response shape** for these three endpoints:
+
+```json
+{
+  "success": true,
+  "data": {
+    "availability": false,
+    "count": 3,
+    "results": [ { …deal… }, … ]
+  }
+}
+```
+
+> Note: `featured` and `favorites` previously returned a bare list in `data`;
+> they now return the `{ availability, count, results }` object above (nearby
+> already returned an object — it just gained the `availability` key). Update
+> any client that read `data` as an array to read `data.results`.
+
 ## Endpoint summary
 
 All endpoints are JSON unless flagged as `multipart/form-data` (for file uploads).
@@ -370,11 +407,11 @@ Authenticated endpoints require `Authorization: Bearer <access_token>`.
 | ------ | --------------------------------- | -------------------------------------------------------------------------------------- |
 | GET    | `/api/categories/`                | List active deal categories                                                            |
 | GET    | `/api/deals/`                     | List deals (filters: `category_id`, `search`, `featured`, `lat`, `lng`; paginated)     |
-| GET    | `/api/deals/featured/`            | Featured-deals home section (admin-flagged, highest rating first; `category_id`, `limit`) |
-| GET    | `/api/deals/nearby/`              | Deals near a point — **requires** `lat` & `lng`; optional `km` radius, `category_id`, `limit` (nearest first) |
+| GET    | `/api/deals/featured/`            | Featured-deals home section (admin-flagged, highest rating first; `category_id`, `lat`, `lng`, `limit`). Response includes [`availability`](#service-coverage-availability). |
+| GET    | `/api/deals/nearby/`              | Deals near a point — **requires** `lat` & `lng`; optional `km` radius, `category_id`, `limit` (nearest first). Response includes [`availability`](#service-coverage-availability). |
 | GET    | `/api/deals/<id>/`                | Retrieve one deal                                                                      |
 | POST   | `/api/deals/favorites/toggle/`    | Add or remove the deal from favorites                                                  |
-| GET    | `/api/deals/favorites/`           | List the current user's favorite deals                                                 |
+| GET    | `/api/deals/favorites/`           | List the current user's favorite deals (`lat`, `lng` → `availability`). Response includes [`availability`](#service-coverage-availability). |
 | POST   | `/api/deals/generate-code/`       | Generate a one-time QR redemption token (requires ACTIVE WINDEAL+)                     |
 
 ### Business side

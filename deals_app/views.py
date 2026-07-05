@@ -95,6 +95,47 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     return 2 * R * math.asin(math.sqrt(a))
 
 
+# Service coverage radius: WINDEAL is "available" for a user if at least one
+# active offer exists within this distance of them.
+COVERAGE_RADIUS_KM = 80.0
+
+
+def _parse_lat_lng(request):
+    """Return (lat, lng) as floats, or (None, None) if absent/invalid."""
+    raw_lat = request.query_params.get("lat")
+    raw_lng = request.query_params.get("lng")
+    if raw_lat in (None, "") or raw_lng in (None, ""):
+        return None, None
+    try:
+        return float(raw_lat), float(raw_lng)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _area_supported(lat, lng, radius_km=COVERAGE_RADIUS_KM):
+    """
+    True if any active deal's business sits within ``radius_km`` of (lat, lng).
+
+    Used to flag ``availability`` on the home-screen sections: if the nearest
+    active offer is farther than the radius, the user is in an unsupported area.
+    Returns ``True`` when coordinates are missing (we can't prove otherwise).
+    """
+    if lat is None or lng is None:
+        return True
+    coords = (
+        BusinessProfile.objects
+        .filter(latitude__isnull=False, longitude__isnull=False,
+                user__deals__is_active=True)
+        .distinct()
+        .values_list("latitude", "longitude")
+    )
+    for blat, blng in coords:
+        km = _haversine_km(lat, lng, blat, blng)
+        if km is not None and km <= radius_km:
+            return True
+    return False
+
+
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                           CLIENT SIDE                                    ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
@@ -217,17 +258,23 @@ def list_deals(request):
         "Returns the **Featured Deals** section — a fixed home-screen section.\n\n"
         "Deals flagged as featured by an admin (`is_featured=true`) are returned first, "
         "ordered by rating (highest first).\n\n"
+        "If the app sends the user's `lat` & `lng`, the response also includes "
+        "`availability`: `false` when **no active offer exists within "
+        "80 km** of the user (unsupported area). The deals are returned either way.\n\n"
         "**Auth required.**"
     ),
     parameters=[
         _LANG, _AUTH,
         OpenApiParameter("category_id", OpenApiTypes.UUID, OpenApiParameter.QUERY, required=False),
+        OpenApiParameter("lat", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=False,
+                         description="User latitude — used to compute `availability`."),
+        OpenApiParameter("lng", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=False,
+                         description="User longitude — used to compute `availability`."),
         OpenApiParameter("limit", OpenApiTypes.INT, OpenApiParameter.QUERY, required=False,
                          description="Max number of deals to return (default 20)."),
     ],
     responses={200: OpenApiResponse(
-        response=DealListSerializer(many=True),
-        description="Featured deals returned, highest rating first.",
+        description="Featured deals returned, highest rating first, plus `availability`.",
     )},
 )
 @api_view(["GET"])
@@ -254,7 +301,10 @@ def featured_deals(request):
     )
     data = DealListSerializer(deals, many=True,
                               context={"request": request, "favorite_ids": fav_ids}).data
-    return _ok(data=data, lang=lang)
+
+    lat, lng = _parse_lat_lng(request)
+    availability = _area_supported(lat, lng)
+    return _ok(data={"availability": availability, "count": len(data), "results": data}, lang=lang)
 
 
 @extend_schema(
@@ -267,6 +317,8 @@ def featured_deals(request):
         "with `distance_km`.\n\n"
         "Pass `km` to only return deals within that radius (e.g. `km=10` → within 10 km). "
         "Deals whose business has no coordinates are excluded.\n\n"
+        "The response includes `availability`: `false` when **no active offer exists "
+        "within 80 km** of the user (unsupported area). Deals are still returned.\n\n"
         "**Auth required.**"
     ),
     parameters=[
@@ -343,7 +395,20 @@ def nearby_deals(request):
         candidates, many=True,
         context={"request": request, "favorite_ids": fav_ids, "distances": distances},
     ).data
-    return _ok(data={"radius_km": radius_km, "count": len(data), "results": data}, lang=lang)
+
+    # Availability = is any active offer within the 80 km coverage radius?
+    # Shortcut: if a candidate is already within it we know the answer without re-querying.
+    nearest = min(distances.values()) if distances else None
+    if nearest is not None and nearest <= COVERAGE_RADIUS_KM:
+        availability = True
+    else:
+        availability = _area_supported(lat, lng)
+
+    return _ok(
+        data={"availability": availability, "radius_km": radius_km,
+              "count": len(data), "results": data},
+        lang=lang,
+    )
 
 
 @extend_schema(
@@ -403,9 +468,21 @@ def toggle_favorite(request):
 @extend_schema(
     tags=["Client — Favorites"],
     summary="List the current user's favorite deals",
-    description="Returns all deals the authenticated user has favorited.\n\n**Auth required.**",
-    parameters=[_LANG, _AUTH],
-    responses={200: OpenApiResponse(description="Favorites returned.")},
+    description=(
+        "Returns all deals the authenticated user has favorited.\n\n"
+        "If the app sends the user's `lat` & `lng`, the response also includes "
+        "`availability`: `false` when **no active offer exists within 80 km** of "
+        "the user (unsupported area). Favorites are returned either way.\n\n"
+        "**Auth required.**"
+    ),
+    parameters=[
+        _LANG, _AUTH,
+        OpenApiParameter("lat", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=False,
+                         description="User latitude — used to compute `availability`."),
+        OpenApiParameter("lng", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=False,
+                         description="User longitude — used to compute `availability`."),
+    ],
+    responses={200: OpenApiResponse(description="Favorites returned, plus `availability`.")},
 )
 @api_view(["GET"])
 @login_required
@@ -424,7 +501,10 @@ def list_favorites(request):
         deals, many=True,
         context={"request": request, "favorite_ids": set(fav_ids)},
     ).data
-    return _ok(data=data, lang=lang)
+
+    lat, lng = _parse_lat_lng(request)
+    availability = _area_supported(lat, lng)
+    return _ok(data={"availability": availability, "count": len(data), "results": data}, lang=lang)
 
 
 # ─── QR token generation ──────────────────────────────────────────────────────
