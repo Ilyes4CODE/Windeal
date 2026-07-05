@@ -587,6 +587,8 @@ def list_offers(request):
     summary="Create a new offer",
     description=(
         "Creates a new offer owned by the authenticated business.\n\n"
+        "`discount_value` is **auto-calculated** from `old_price` and `new_price` "
+        "(e.g. 2000 → 1000 = `\"50%\"`); do not send it — it is read-only.\n\n"
         "**Request format:** `multipart/form-data` (for image upload).\n\n"
         "**Auth required (business).**"
     ),

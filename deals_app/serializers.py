@@ -1,4 +1,5 @@
 # App: deals_app | File: serializers.py
+from decimal import Decimal
 from rest_framework import serializers
 from .models import Deal, Favorite, RedemptionToken, Redemption, Notification
 from admin_app.models import Category, SubscriptionPlan
@@ -111,6 +112,10 @@ class DealListSerializer(serializers.ModelSerializer):
 class BusinessOfferSerializer(serializers.ModelSerializer):
     """
     Used by business owners to list/create/update their own offers.
+
+    ``discount_value`` is **auto-calculated** from ``old_price`` and
+    ``new_price`` (e.g. 2000 → 1000 = "50%") — it is read-only and any value
+    the client sends is ignored.
     """
     image_url      = serializers.SerializerMethodField()
     category_name  = serializers.CharField(source="category.name", read_only=True)
@@ -130,8 +135,9 @@ class BusinessOfferSerializer(serializers.ModelSerializer):
             "is_featured",
             "created_at", "updated_at",
         ]
-        # is_featured is admin-controlled, so it is read-only for businesses.
-        read_only_fields = ["id", "image_url", "category_name", "rating", "is_featured", "created_at", "updated_at"]
+        # discount_value is derived from the prices; is_featured is admin-controlled.
+        read_only_fields = ["id", "image_url", "category_name", "discount_value",
+                            "rating", "is_featured", "created_at", "updated_at"]
         extra_kwargs = {
             "image":     {"write_only": True, "required": False, "allow_null": True},
             "category":  {"required": False, "allow_null": True},
@@ -151,11 +157,49 @@ class BusinessOfferSerializer(serializers.ModelSerializer):
         return value.strip()
 
     def validate(self, attrs):
-        old_p = attrs.get("old_price")
-        new_p = attrs.get("new_price")
+        # Consider existing instance values so partial (PATCH) updates validate too.
+        old_p = attrs.get("old_price", getattr(self.instance, "old_price", None))
+        new_p = attrs.get("new_price", getattr(self.instance, "new_price", None))
         if old_p is not None and new_p is not None and new_p > old_p:
             raise serializers.ValidationError({"new_price": "New price must be less than or equal to old price."})
         return attrs
+
+    @staticmethod
+    def compute_discount(old_price, new_price):
+        """
+        Percentage saved, as a string like ``"50%"``.
+        Returns ``""`` when it can't be computed (missing/zero old price, or
+        the new price is not actually lower).
+        """
+        try:
+            if old_price is None or new_price is None:
+                return ""
+            old_price = Decimal(str(old_price))
+            new_price = Decimal(str(new_price))
+            if old_price <= 0 or new_price >= old_price:
+                return ""
+            pct = (old_price - new_price) / old_price * Decimal(100)
+            return f"{int(round(pct))}%"
+        except Exception:
+            return ""
+
+    def _apply_discount(self, instance):
+        discount = self.compute_discount(instance.old_price, instance.new_price)
+        if instance.discount_value != discount:
+            instance.discount_value = discount
+            instance.save(update_fields=["discount_value"])
+
+    def create(self, validated_data):
+        validated_data.pop("discount_value", None)  # always derived, never client-set
+        instance = super().create(validated_data)
+        self._apply_discount(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        validated_data.pop("discount_value", None)
+        instance = super().update(instance, validated_data)
+        self._apply_discount(instance)
+        return instance
 
 
 # ─── Subscription plans (client read-only) ────────────────────────────────────

@@ -331,6 +331,24 @@ Then, in another terminal, redeem a deal or approve a payment — the frames arr
 
 ---
 
+## Automatic discount
+
+When a business creates or updates an offer, **`discount_value` is calculated
+automatically** from `old_price` and `new_price` — the business never types it.
+
+```
+discount_value = round((old_price - new_price) / old_price * 100) + "%"
+```
+
+- `old_price = 2000`, `new_price = 1000` → `"50%"`
+- `discount_value` is **read-only**: any value the client sends is ignored.
+- It is recomputed on every price change (including partial `PATCH` — e.g.
+  updating only `new_price` recomputes against the stored `old_price`).
+- If `old_price`/`new_price` are missing, zero, or the new price isn't lower,
+  `discount_value` is `""`.
+
+Clients read it as `discount_amount` in the deal list (e.g. `GET /api/deals/`).
+
 ## Service coverage (`availability`)
 
 The three home-screen deal sections — **`/api/deals/featured/`**,
@@ -418,7 +436,7 @@ Authenticated endpoints require `Authorization: Bearer <access_token>`.
 | Method | Path                                       | Purpose                                                                  |
 | ------ | ------------------------------------------ | ------------------------------------------------------------------------ |
 | GET    | `/api/business/offers/`                    | List my offers                                                           |
-| POST   | `/api/business/offers/create/`             | Create a new offer (multipart/form-data for image)                       |
+| POST   | `/api/business/offers/create/`             | Create a new offer (multipart/form-data for image). `discount_value` is **auto-calculated** from `old_price`/`new_price` — see [Automatic discount](#automatic-discount). |
 | GET    | `/api/business/offers/<id>/`               | Retrieve one of my offers                                                |
 | PATCH  | `/api/business/offers/<id>/`               | Update one of my offers                                                  |
 | DELETE | `/api/business/offers/<id>/`               | Delete one of my offers                                                  |
