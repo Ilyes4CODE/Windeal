@@ -3,6 +3,7 @@ attrs==25.4.0
 autobahn==24.4.2
 automat==25.4.16
 channels==4.3.2
+channels-redis==4.2.1
 constantly==23.10.4
 cryptography==49.0.0
 daphne==4.2.2
@@ -20,6 +21,7 @@ packaging==26.0
 pillow==12.1.1
 psycopg2-binary==2.9.11
 PyJWT==2.11.0
+python-dotenv==1.0.1
 PyYAML==6.0.3
 referencing==0.37.0
 rpds-py==0.30.0

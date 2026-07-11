@@ -5,11 +5,39 @@ from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = "django-insecure-zxss^k$!#u*#is4)g(^g=$mk20^50wt+emx^0#k$e))xztgn(r"
+# Load environment variables from a .env file if present (production/server use).
+# Locally, with no .env, the defaults below keep the dev experience unchanged.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(BASE_DIR / ".env")
+except ImportError:
+    pass
 
-DEBUG = True
 
-ALLOWED_HOSTS = ["*"]
+def _env_bool(name, default):
+    return os.environ.get(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_list(name, default=""):
+    raw = os.environ.get(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+# SECURITY: set DJANGO_SECRET_KEY in production. The default is dev-only.
+SECRET_KEY = os.environ.get(
+    "DJANGO_SECRET_KEY",
+    "django-insecure-zxss^k$!#u*#is4)g(^g=$mk20^50wt+emx^0#k$e))xztgn(r",
+)
+
+# SECURITY: set DJANGO_DEBUG=False in production.
+DEBUG = _env_bool("DJANGO_DEBUG", True)
+
+# e.g. DJANGO_ALLOWED_HOSTS="api.windeal.dz,187.77.171.86"
+ALLOWED_HOSTS = _env_list("DJANGO_ALLOWED_HOSTS", "*")
+
+# Needed for the Django admin / DRF over HTTPS behind Nginx.
+# e.g. DJANGO_CSRF_TRUSTED_ORIGINS="https://api.windeal.dz"
+CSRF_TRUSTED_ORIGINS = _env_list("DJANGO_CSRF_TRUSTED_ORIGINS", "")
 
 INSTALLED_APPS = [
     # daphne must come first so it overrides the default runserver with the
@@ -67,29 +95,37 @@ WSGI_APPLICATION = "Windeal.wsgi.application"
 ASGI_APPLICATION = "Windeal.asgi.application"
 
 # ── Channels (WebSockets) ─────────────────────────────────────────────────────
-# In-memory layer is fine for local dev and a single-process deployment.
-# For multi-process / horizontally-scaled production, switch to Redis:
-#
-#   CHANNEL_LAYERS = {
-#       "default": {
-#           "BACKEND": "channels_redis.core.RedisChannelLayer",
-#           "CONFIG": {"hosts": [("127.0.0.1", 6379)]},
-#       }
-#   }
-#
-# (requires: pip install channels-redis)
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer",
+# In-memory layer works for local dev and a single-process deployment.
+# Set REDIS_URL (e.g. "redis://127.0.0.1:6379/0") in production so multiple
+# Daphne/worker processes share the channel layer. Requires: channels-redis.
+REDIS_URL = os.environ.get("REDIS_URL", "").strip()
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [REDIS_URL]},
+        }
     }
-}
+else:
+    CHANNEL_LAYERS = {
+        "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"},
+    }
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+# ── Database ──────────────────────────────────────────────────────────────────
+# Set DATABASE_URL (e.g. "postgres://user:pass@127.0.0.1:5432/windeal") in
+# production. Falls back to local SQLite when unset.
+if os.environ.get("DATABASE_URL"):
+    import dj_database_url
+    DATABASES = {
+        "default": dj_database_url.config(conn_max_age=600, ssl_require=False),
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -131,7 +167,22 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS: allow all by default (handy for a mobile app hitting the API directly).
+# To lock down to specific web origins, set DJANGO_CORS_ALLOW_ALL=False and list
+# DJANGO_CORS_ALLOWED_ORIGINS="https://app.windeal.dz,https://admin.windeal.dz".
+CORS_ALLOW_ALL_ORIGINS = _env_bool("DJANGO_CORS_ALLOW_ALL", True)
+CORS_ALLOWED_ORIGINS = _env_list("DJANGO_CORS_ALLOWED_ORIGINS", "")
+
+# ── Production security hardening (only active when DEBUG=False) ───────────────
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    # Let Nginx/Certbot handle the redirect; enable HSTS once HTTPS is confirmed.
+    SECURE_HSTS_SECONDS = int(os.environ.get("DJANGO_HSTS_SECONDS", "0"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "WINDEAL API",
