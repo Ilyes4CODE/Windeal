@@ -17,7 +17,7 @@ Daphne (ASGI) serves **both** the REST API and the WebSockets. PostgreSQL is the
 database, Redis backs the real-time channel layer, Nginx terminates TLS and
 serves static/media files.
 
-> Replace `187.77.171.86` with your VPS IP and `api.windeal.dz` with your domain
+> Replace `187.77.171.86` with your VPS IP and `api.windeal.company` with your domain
 > everywhere below. If you don't have a domain yet you can start with the IP and
 > add TLS later (WebSockets will be `ws://` instead of `wss://` until then).
 
@@ -26,7 +26,7 @@ serves static/media files.
 ## 0. Before you start
 
 - **(Recommended) Point a domain at the VPS.** In your DNS provider add an `A`
-  record: `api.windeal.dz → 187.77.171.86`. TLS/HTTPS needs a domain.
+  record: `api.windeal.company → 187.77.171.86`. TLS/HTTPS needs a domain.
 - Have your VPS root password (or set up an SSH key in hPanel → SSH keys).
 
 ---
@@ -109,8 +109,8 @@ Fill it in (matching the DB password and domain/IP):
 ```ini
 DJANGO_SECRET_KEY=<paste the generated key>
 DJANGO_DEBUG=False
-DJANGO_ALLOWED_HOSTS=api.windeal.dz,187.77.171.86
-DJANGO_CSRF_TRUSTED_ORIGINS=https://api.windeal.dz
+DJANGO_ALLOWED_HOSTS=api.windeal.company,187.77.171.86
+DJANGO_CSRF_TRUSTED_ORIGINS=https://api.windeal.company
 DATABASE_URL=postgres://windeal:STRONG_DB_PASSWORD@127.0.0.1:5432/windeal
 REDIS_URL=redis://127.0.0.1:6379/0
 DJANGO_CORS_ALLOW_ALL=True
@@ -180,7 +180,7 @@ nano /etc/nginx/sites-available/windeal
 ```nginx
 server {
     listen 80;
-    server_name api.windeal.dz 187.77.171.86;
+    server_name api.windeal.company 187.77.171.86;
 
     client_max_body_size 20M;   # payment receipts / deal images
 
@@ -238,7 +238,7 @@ ufw --force enable
 
 ```sh
 apt install -y certbot python3-certbot-nginx
-certbot --nginx -d api.windeal.dz
+certbot --nginx -d api.windeal.company
 ```
 
 Certbot rewrites the Nginx config for port 443 and sets up auto-renewal. After
@@ -247,10 +247,10 @@ HTTPS works, optionally set `DJANGO_HSTS_SECONDS=31536000` in `.env` and
 
 Your endpoints are now:
 
-- REST API:   `https://api.windeal.dz/api/...`
-- Swagger UI: `https://api.windeal.dz/api/docs/`
-- WebSocket:  `wss://api.windeal.dz/ws/notifications/?token=<access>`
-- Admin:      `https://api.windeal.dz/django-admin/`
+- REST API:   `https://api.windeal.company/api/...`
+- Swagger UI: `https://api.windeal.company/api/docs/`
+- WebSocket:  `wss://api.windeal.company/ws/notifications/?token=<access>`
+- Admin:      `https://api.windeal.company/django-admin/`
 
 ---
 
@@ -258,15 +258,15 @@ Your endpoints are now:
 
 ```sh
 # from the server or your PC
-curl -s https://api.windeal.dz/api/schema/ -o /dev/null -w "%{http_code}\n"   # 200
+curl -s https://api.windeal.company/api/schema/ -o /dev/null -w "%{http_code}\n"   # 200
 
 # register a client, then hit an authed endpoint
-curl -s -X POST https://api.windeal.dz/api/auth/register/client/ \
+curl -s -X POST https://api.windeal.company/api/auth/register/client/ \
   -H 'Content-Type: application/json' \
   -d '{"phone":"+213555111222","full_name":"Test","wilaya":"Alger"}'
 ```
 
-For WebSockets, connect to `wss://api.windeal.dz/ws/notifications/?token=<access>`
+For WebSockets, connect to `wss://api.windeal.company/ws/notifications/?token=<access>`
 from the app (or the Python snippet in `README.md`).
 
 ---
