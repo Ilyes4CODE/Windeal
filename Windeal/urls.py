@@ -1,8 +1,8 @@
 # Project: windeal | File: windeal/urls.py
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
 from django.conf import settings
-from django.conf.urls.static import static
+from django.views.static import serve as media_serve
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularSwaggerView,
@@ -28,4 +28,13 @@ urlpatterns = [
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/",   SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
     path("api/redoc/",  SpectacularRedocView.as_view(url_name="schema"),   name="redoc"),
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+]
+
+# ── Media files (uploaded images / receipts) ──────────────────────────────────
+# django.conf.urls.static.static() only serves media when DEBUG=True, so in
+# production (DEBUG=False) uploaded images 404. Serve them explicitly here so it
+# works in both modes. Daphne runs as the media files' owner, which sidesteps the
+# Nginx "can't read /home/<user>" permission problem entirely.
+urlpatterns += [
+    re_path(r"^media/(?P<path>.*)$", media_serve, {"document_root": settings.MEDIA_ROOT}),
+]
