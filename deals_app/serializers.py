@@ -4,6 +4,7 @@ from rest_framework import serializers
 from .models import Deal, Favorite, RedemptionToken, Redemption, Notification
 from admin_app.models import Category, SubscriptionPlan
 from auth_app.models import BusinessProfile
+from auth_app.serializers import split_coords
 
 
 # ─── Categories (public) ──────────────────────────────────────────────────────
@@ -76,8 +77,17 @@ class DealListSerializer(serializers.ModelSerializer):
         return bp.business_name if bp else None
 
     def get_location_name(self, obj):
+        # Human-readable place shown in the app. Prefer the business address,
+        # fall back to the city. Guard against legacy rows where a client stored
+        # coordinates in `address` — never surface raw coords as a place name.
         bp = self._business_profile(obj)
-        return (bp.address or obj.business.city) if bp else (obj.business.city if obj.business else None)
+        city = obj.business.city if obj.business else None
+        if not bp:
+            return city or None
+        address = bp.address
+        if address and split_coords(address):
+            address = None
+        return address or city or None
 
     def get_latitude(self, obj):
         bp = self._business_profile(obj)

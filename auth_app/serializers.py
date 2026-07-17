@@ -1,11 +1,40 @@
 # App: auth_app | File: serializers.py
+import re
 from rest_framework import serializers
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from .models import User, ClientProfile, BusinessProfile
 
 
 def _e(en, ar, fr):
     return {"en": en, "ar": ar, "fr": fr}
+
+
+# A bare "lat, lng" string, e.g. "36.7525, 3.0420".
+_COORD_RE = re.compile(r"^\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$")
+
+
+def split_coords(value):
+    """
+    If `value` is a bare "lat, lng" string, return (Decimal lat, Decimal lng);
+    otherwise return None.
+
+    Clients sometimes pack coordinates into the free-text `address` field. The
+    address is surfaced to users as `location_name`, so coordinates must never
+    live there — we recover them into the real latitude/longitude columns.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    match = _COORD_RE.match(value)
+    if not match:
+        return None
+    try:
+        lat = Decimal(match.group(1))
+        lng = Decimal(match.group(2))
+    except (InvalidOperation, TypeError):
+        return None
+    if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+        return None
+    return lat, lng
 
 
 ERRORS = {
@@ -29,6 +58,9 @@ ERRORS = {
     "lng_range":             _e("Longitude must be between -180 and 180.",             "يجب أن يكون خط الطول بين -180 و 180.",             "La longitude doit être comprise entre -180 et 180."),
     "lat_required_with_lng": _e("Latitude is required when longitude is provided.",    "خط العرض مطلوب عند تقديم خط الطول.",               "La latitude est requise lorsque la longitude est fournie."),
     "lng_required_with_lat": _e("Longitude is required when latitude is provided.",    "خط الطول مطلوب عند تقديم خط العرض.",               "La longitude est requise lorsque la latitude est fournie."),
+    "lat_lng_required":      _e("Latitude and longitude are required for a business. Send them as separate numeric fields, not inside 'address'.",
+                                "خط العرض وخط الطول مطلوبان للنشاط التجاري. أرسلهما كحقلين رقميين منفصلين وليس داخل 'address'.",
+                                "La latitude et la longitude sont requises pour une entreprise. Envoyez-les comme champs numériques distincts, pas dans 'address'."),
     # Payment
     "receipt_type":          _e("Receipt must be a JPEG, PNG, or PDF file.",           "يجب أن يكون الإيصال ملف JPEG أو PNG أو PDF.",      "Le reçu doit être un fichier JPEG, PNG ou PDF."),
     "receipt_size":          _e("Receipt file must not exceed 5MB.",                   "يجب ألا يتجاوز حجم ملف الإيصال 5 ميجابايت.",      "Le fichier reçu ne doit pas dépasser 5 Mo."),
@@ -173,12 +205,30 @@ class BusinessRegisterSerializer(serializers.Serializer):
         return value
 
     def validate(self, data):
+        # `address` is free text shown to users as `location_name`, so it must
+        # never hold coordinates. If a client packed "lat, lng" in there, move
+        # them into the real fields and drop them from the address.
+        coords = split_coords(data.get("address"))
+        if coords:
+            if data.get("latitude") is None and data.get("longitude") is None:
+                data["latitude"], data["longitude"] = coords
+            data["address"] = ""
+
         lat = data.get("latitude")
         lng = data.get("longitude")
         if lat is not None and lng is None:
             raise serializers.ValidationError({"longitude": _err("lng_required_with_lat", self.context)})
         if lng is not None and lat is None:
             raise serializers.ValidationError({"latitude":  _err("lat_required_with_lng", self.context)})
+
+        # Coordinates drive Nearby, distance_km and the 80km availability check,
+        # so a business without them is unusable — fail loudly instead of
+        # silently creating a business that never appears in any location query.
+        if lat is None or lng is None:
+            raise serializers.ValidationError({
+                "latitude":  _err("lat_lng_required", self.context),
+                "longitude": _err("lat_lng_required", self.context),
+            })
         return data
 
 
@@ -276,12 +326,21 @@ class UpdateBusinessProfileSerializer(serializers.Serializer):
         return value
 
     def validate(self, data):
+        # Same guard as registration: coordinates never belong in `address`.
+        coords = split_coords(data.get("address"))
+        if coords:
+            if data.get("latitude") is None and data.get("longitude") is None:
+                data["latitude"], data["longitude"] = coords
+            data["address"] = ""
+
         lat = data.get("latitude")
         lng = data.get("longitude")
         if lat is not None and lng is None:
             raise serializers.ValidationError({"longitude": _err("lng_required_with_lat", self.context)})
         if lng is not None and lat is None:
             raise serializers.ValidationError({"latitude":  _err("lat_required_with_lng", self.context)})
+        # Partial update: absent lat/lng simply means "unchanged", so no
+        # required-check here (unlike registration).
         return data
 
 

@@ -331,6 +331,86 @@ Then, in another terminal, redeem a deal or approve a payment — the frames arr
 
 ---
 
+## Business location (`latitude` / `longitude` / `location_name`)
+
+A business's location powers **Nearby**, `distance_km`, and the 80 km
+[`availability`](#service-coverage-availability) check — so it must be stored
+correctly. There are three distinct fields, and clients must not mix them up:
+
+| Field | Type | Purpose |
+| --- | --- | --- |
+| `latitude` / `longitude` | **numbers** (sent as separate fields) | Map pin + all distance maths |
+| `address` | free text | Human-readable street/place — returned to clients as **`location_name`** |
+| `city` | free text | Fallback for `location_name` when `address` is empty |
+
+`location_name` resolves as: **`address` → `city` → `null`**.
+
+### ✅ Correct registration payload
+
+```json
+POST /api/auth/register/business/
+{
+  "phone": "+213555000111",
+  "business_name": "tech zone",
+  "city": "Alger",
+  "address": "12 Rue Didouche Mourad",
+  "latitude": "36.7525",
+  "longitude": "3.0420"
+}
+```
+
+### ❌ Common mistake — coordinates inside `address`
+
+```json
+{ "business_name": "cafee", "address": "36.7525, 3.0420" }   // don't do this
+```
+
+This leaves `latitude`/`longitude` **null** (so the business never appears in
+Nearby and is invisible to the coverage check) and makes `location_name` render
+as raw coordinates.
+
+### How the backend protects against it
+
+1. **Auto-recovery** — if `address` is a bare `"lat, lng"` string, the server
+   parses it into the real `latitude`/`longitude` fields and clears the address
+   (`split_coords` in `auth_app/serializers.py`). Applies to registration *and*
+   profile update.
+2. **`location_name` is sanitised** — it never returns raw coordinates, even for
+   legacy rows still holding coords in `address`; it falls back to `city`.
+3. **Coordinates are required** — registering a business with no location at all
+   is rejected with `400`:
+   > *Latitude and longitude are required for a business. Send them as separate
+   > numeric fields, not inside 'address'.*
+
+   `latitude` and `longitude` must always be sent **together**.
+
+> Auto-recovery fixes the coordinates without any client change, but
+> `location_name` still needs the client to send `city` (or a real `address`) —
+> the server can't invent a place name.
+
+### Backfilling legacy rows
+
+For businesses already stored with coordinates in `address`:
+
+```sh
+./venv/bin/python manage.py shell <<'PY'
+from auth_app.models import BusinessProfile
+from auth_app.serializers import split_coords
+
+for bp in BusinessProfile.objects.select_related("user"):
+    coords = split_coords(bp.address)
+    if not coords:
+        continue
+    bp.latitude, bp.longitude = coords
+    bp.address = ""                       # so location_name falls back to city
+    bp.save(update_fields=["latitude", "longitude", "address"])
+    if not bp.user.city:
+        bp.user.city = "Alger"            # adjust per business
+        bp.user.save(update_fields=["city"])
+    print("fixed:", bp.business_name, bp.latitude, bp.longitude)
+PY
+```
+
 ## Automatic discount
 
 When a business creates or updates an offer, **`discount_value` is calculated
