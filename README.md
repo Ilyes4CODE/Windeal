@@ -24,6 +24,13 @@ This document covers running the backend locally on **macOS** (Apple Silicon or 
 
 ---
 
+## Related docs
+
+| Doc | For |
+| --- | --- |
+| **[MOBILE.md](MOBILE.md)** | **Mobile devs** — base URLs, auth flow, payloads, WebSocket usage, common mistakes |
+| [DEPLOY.md](DEPLOY.md) | Deploying to the Ubuntu VPS (Postgres, Redis, Daphne, Nginx, TLS) |
+
 ## Apps
 
 | Django app   | Responsibility                                                                 |
