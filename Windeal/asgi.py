@@ -18,16 +18,21 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "Windeal.settings")
 django_asgi_app = get_asgi_application()
 
 from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
-from channels.security.websocket import AllowedHostsOriginValidator  # noqa: E402
 
 from deals_app.ws_auth import JWTAuthMiddleware  # noqa: E402
 from deals_app.routing import websocket_urlpatterns  # noqa: E402
 
 application = ProtocolTypeRouter({
     "http": django_asgi_app,
-    "websocket": AllowedHostsOriginValidator(
-        JWTAuthMiddleware(
-            URLRouter(websocket_urlpatterns)
-        )
+    # The socket is authenticated by JWT (deals_app.ws_auth.JWTAuthMiddleware):
+    # a valid access token is required to connect. We deliberately do NOT wrap
+    # this in AllowedHostsOriginValidator — mobile clients (Flutter) and other
+    # non-browser tools don't send an `Origin` header, and origin validation
+    # rejects them with HTTP 403 whenever ALLOWED_HOSTS isn't "*" (i.e. in
+    # production). Origin checks defend against cookie-based cross-site WS
+    # hijacking, which doesn't apply here since auth is a bearer token in the
+    # query string, not a cookie.
+    "websocket": JWTAuthMiddleware(
+        URLRouter(websocket_urlpatterns)
     ),
 })
