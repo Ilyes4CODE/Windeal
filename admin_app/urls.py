@@ -25,4 +25,7 @@ urlpatterns = [
     path("users/<uuid:user_id>/toggle/",         views.toggle_user,       name="admin_toggle_user"),
     path("users/<uuid:user_id>/ban/",            views.ban_user,          name="admin_ban_user"),
     path("users/<uuid:user_id>/subscription/",   views.set_subscription,  name="admin_set_subscription"),
+
+    # ── App settings (free vs plans) ──────────────────────────────────────────
+    path("settings/",                            views.app_settings,      name="admin_app_settings"),
 ]

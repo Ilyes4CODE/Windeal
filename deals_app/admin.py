@@ -2,7 +2,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 
-from .models import Deal, Favorite, RedemptionToken, Redemption, Notification
+from .models import Deal, Favorite, RedemptionToken, Redemption, Notification, DealRating
 
 
 @admin.register(Deal)
@@ -40,6 +40,14 @@ class RedemptionAdmin(admin.ModelAdmin):
     list_filter   = ("status",)
     search_fields = ("student__phone", "business__phone", "deal__title")
     readonly_fields = ("id", "created_at")
+
+
+@admin.register(DealRating)
+class DealRatingAdmin(admin.ModelAdmin):
+    list_display  = ("deal", "user", "rating", "updated_at")
+    list_filter   = ("rating",)
+    search_fields = ("deal__title", "user__phone")
+    readonly_fields = ("id", "created_at", "updated_at")
 
 
 @admin.register(Notification)

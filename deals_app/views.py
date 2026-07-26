@@ -23,14 +23,15 @@ from drf_spectacular.utils import (
 )
 from drf_spectacular.types import OpenApiTypes
 
-from admin_app.models import Category, SubscriptionPlan, Payment
+from admin_app.models import Category, SubscriptionPlan, Payment, AppSetting
 from auth_app.models import User, ClientProfile, BusinessProfile
 from core.decorators import (
-    _authenticate_request, login_required, client_required, business_required,
+    _authenticate_request, login_required, login_optional,
+    client_required, business_required,
 )
 from core.messages import get_message
 
-from .models import Deal, Favorite, RedemptionToken, Redemption, Notification
+from .models import Deal, Favorite, RedemptionToken, Redemption, Notification, DealRating, recompute_deal_rating
 from .services import notify, send_realtime, redeem_token
 from .serializers import (
     PublicCategorySerializer,
@@ -43,6 +44,7 @@ from .serializers import (
     RedeemSerializer,
     ToggleFavoriteSerializer,
     PaymentHistorySerializer,
+    RateDealSerializer,
 )
 
 
@@ -151,7 +153,7 @@ def _area_supported(lat, lng, radius_km=COVERAGE_RADIUS_KM):
     responses={200: OpenApiResponse(description="Categories returned.")},
 )
 @api_view(["GET"])
-@login_required
+@login_optional
 def list_categories(request):
     lang = _lang(request)
     qs = Category.objects.filter(is_active=True).order_by("name")
@@ -181,7 +183,7 @@ def list_categories(request):
     responses={200: OpenApiResponse(description="Deals returned.")},
 )
 @api_view(["GET"])
-@login_required
+@login_optional
 def list_deals(request):
     lang = _lang(request)
     qs = Deal.objects.filter(is_active=True).select_related("category", "business", "business__business_profile")
@@ -230,16 +232,23 @@ def list_deals(request):
     start, end = (page - 1) * page_size, (page - 1) * page_size + page_size
     deals = deals[start:end]
 
-    # Pre-compute favorites for the current user (avoids N+1)
+    # Pre-compute favorites + own ratings for the current user (avoids N+1)
     fav_ids = set()
+    rating_map = {}
     if getattr(request.user, "is_authenticated", False):
         fav_ids = set(
             Favorite.objects
                 .filter(user=request.user, deal__in=deals)
                 .values_list("deal_id", flat=True)
         )
+        rating_map = dict(
+            DealRating.objects
+                .filter(user=request.user, deal__in=deals)
+                .values_list("deal_id", "rating")
+        )
 
-    data = DealListSerializer(deals, many=True, context={"request": request, "favorite_ids": fav_ids}).data
+    data = DealListSerializer(deals, many=True, context={
+        "request": request, "favorite_ids": fav_ids, "my_rating_map": rating_map}).data
     return _ok(
         data={
             "count": total,
@@ -278,7 +287,7 @@ def list_deals(request):
     )},
 )
 @api_view(["GET"])
-@login_required
+@login_optional
 def featured_deals(request):
     lang = _lang(request)
     qs = (
@@ -296,9 +305,11 @@ def featured_deals(request):
         limit = 20
     deals = list(qs[:limit])
 
-    fav_ids = set(
-        Favorite.objects.filter(user=request.user, deal__in=deals).values_list("deal_id", flat=True)
-    )
+    fav_ids = set()
+    if getattr(request.user, "is_authenticated", False):
+        fav_ids = set(
+            Favorite.objects.filter(user=request.user, deal__in=deals).values_list("deal_id", flat=True)
+        )
     data = DealListSerializer(deals, many=True,
                               context={"request": request, "favorite_ids": fav_ids}).data
 
@@ -340,7 +351,7 @@ def featured_deals(request):
     },
 )
 @api_view(["GET"])
-@login_required
+@login_optional
 def nearby_deals(request):
     lang = _lang(request)
     try:
@@ -388,9 +399,11 @@ def nearby_deals(request):
         limit = 50
     candidates = candidates[:limit]
 
-    fav_ids = set(
-        Favorite.objects.filter(user=request.user, deal__in=candidates).values_list("deal_id", flat=True)
-    )
+    fav_ids = set()
+    if getattr(request.user, "is_authenticated", False):
+        fav_ids = set(
+            Favorite.objects.filter(user=request.user, deal__in=candidates).values_list("deal_id", flat=True)
+        )
     data = DealListSerializer(
         candidates, many=True,
         context={"request": request, "favorite_ids": fav_ids, "distances": distances},
@@ -414,12 +427,12 @@ def nearby_deals(request):
 @extend_schema(
     tags=["Client — Deals"],
     summary="Retrieve a single deal",
-    description="Fetch full details of one deal by UUID.\n\n**Auth required.**",
-    parameters=[_LANG, _AUTH, OpenApiParameter("deal_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
+    description="Fetch full details of one deal by UUID.\n\n**Token optional** — richer (`is_favorite`, `my_rating`) when authenticated.",
+    parameters=[_LANG, OpenApiParameter("deal_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
     responses={200: OpenApiResponse(description="Deal returned."), 404: OpenApiResponse(description="Not found.")},
 )
 @api_view(["GET"])
-@login_required
+@login_optional
 def deal_detail(request, deal_id):
     lang = _lang(request)
     try:
@@ -428,6 +441,58 @@ def deal_detail(request, deal_id):
         return _err("not_found", lang, status.HTTP_404_NOT_FOUND)
     data = DealListSerializer(deal, context={"request": request}).data
     return _ok(data=data, lang=lang)
+
+
+# ─── Ratings ──────────────────────────────────────────────────────────────────
+
+@extend_schema(
+    tags=["Client — Deals"],
+    summary="Rate a deal / remove your rating",
+    description=(
+        "**POST** — submit or update your rating (1-5 stars) for a deal. Each user "
+        "has one rating per deal; posting again updates it. The deal's average "
+        "`rating` and `ratings_count` are recomputed immediately.\n\n"
+        "**DELETE** — remove your rating from the deal.\n\n"
+        "**Auth required** (any logged-in user)."
+    ),
+    request=RateDealSerializer,
+    parameters=[_LANG, _AUTH, OpenApiParameter("deal_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
+    responses={
+        200: OpenApiResponse(description="Rating saved/removed. Returns new average, count and your rating."),
+        400: OpenApiResponse(description="Rating must be an integer 1-5."),
+        404: OpenApiResponse(description="Deal not found."),
+    },
+    examples=[OpenApiExample("Rate 4 stars", request_only=True, value={"rating": 4})],
+)
+@api_view(["POST", "DELETE"])
+@login_required
+def rate_deal(request, deal_id):
+    lang = _lang(request)
+    try:
+        deal = Deal.objects.get(id=deal_id, is_active=True)
+    except Deal.DoesNotExist:
+        return _err("not_found", lang, status.HTTP_404_NOT_FOUND)
+
+    if request.method == "DELETE":
+        DealRating.objects.filter(user=request.user, deal=deal).delete()
+        recompute_deal_rating(deal)
+        return _ok(
+            data={"deal_id": str(deal.id), "rating": float(deal.rating),
+                  "ratings_count": deal.ratings_count, "my_rating": None},
+            msg_key="rating_removed", lang=lang,
+        )
+
+    serializer = RateDealSerializer(data=request.data)
+    if not serializer.is_valid():
+        return _err("validation_error", lang, errors=serializer.errors)
+    value = serializer.validated_data["rating"]
+    DealRating.objects.update_or_create(user=request.user, deal=deal, defaults={"rating": value})
+    recompute_deal_rating(deal)
+    return _ok(
+        data={"deal_id": str(deal.id), "rating": float(deal.rating),
+              "ratings_count": deal.ratings_count, "my_rating": value},
+        msg_key="rating_saved", lang=lang,
+    )
 
 
 @extend_schema(
@@ -515,7 +580,9 @@ def list_favorites(request):
     description=(
         "Generates a one-time secure token (`qr_token`) for redeeming a deal.\n\n"
         "- Expires after **10 minutes** (600s).\n"
-        "- Requires an **ACTIVE WINDEAL+ subscription**.\n\n"
+        "- When the app is in **plans** mode, requires an **ACTIVE WINDEAL+ "
+        "subscription** (`402` otherwise). In **free** mode (the launch default, "
+        "admin-controlled) no subscription is needed.\n\n"
         "**Auth required (client).**"
     ),
     request=GenerateCodeSerializer,
@@ -523,7 +590,7 @@ def list_favorites(request):
     responses={
         201: OpenApiResponse(description="Token issued."),
         400: OpenApiResponse(description="Validation error."),
-        402: OpenApiResponse(description="Subscription required."),
+        402: OpenApiResponse(description="Subscription required (plans mode only)."),
         404: OpenApiResponse(description="Deal not found."),
     },
 )
@@ -535,7 +602,8 @@ def generate_redemption_code(request):
     if not serializer.is_valid():
         return _err("validation_error", lang, errors=serializer.errors)
 
-    if request.user.subscription_status != "ACTIVE":
+    # Subscription is only enforced when the admin has put the app in "plans" mode.
+    if not AppSetting.is_free() and request.user.subscription_status != "ACTIVE":
         return _err(http_status=status.HTTP_402_PAYMENT_REQUIRED,
                     message="WINDEAL+ subscription required to redeem deals.")
 

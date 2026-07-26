@@ -35,7 +35,9 @@ class Deal(models.Model):
     new_price       = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
     rating          = models.DecimalField(max_digits=3, decimal_places=2, default=0,
-                        help_text="Average rating 0.00 - 5.00.")
+                        help_text="Average rating 0.00 - 5.00 (auto-computed from DealRating).")
+    ratings_count   = models.PositiveIntegerField(default=0,
+                        help_text="Number of ratings (auto-computed).")
     expiry_date     = models.DateField(null=True, blank=True)
     is_active       = models.BooleanField(default=True)
     is_featured     = models.BooleanField(default=False,
@@ -68,6 +70,40 @@ class Favorite(models.Model):
             models.UniqueConstraint(fields=["user", "deal"], name="unique_user_deal_favorite"),
         ]
         ordering = ["-created_at"]
+
+
+class DealRating(models.Model):
+    """
+    A single user's rating (1-5 stars) for a deal. One rating per (user, deal) —
+    re-rating updates the existing row. The deal's average `rating` and
+    `ratings_count` are recomputed whenever a rating changes.
+    """
+    id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user       = models.ForeignKey("auth_app.User", on_delete=models.CASCADE, related_name="deal_ratings")
+    deal       = models.ForeignKey(Deal, on_delete=models.CASCADE, related_name="ratings")
+    rating     = models.PositiveSmallIntegerField(help_text="1 to 5.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "deal_ratings"
+        constraints = [
+            models.UniqueConstraint(fields=["user", "deal"], name="unique_user_deal_rating"),
+        ]
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return f"{self.rating}★ by {self.user_id} on {self.deal_id}"
+
+
+def recompute_deal_rating(deal):
+    """Recalculate a deal's average rating and count from its DealRating rows."""
+    from django.db.models import Avg, Count
+    agg = deal.ratings.aggregate(avg=Avg("rating"), n=Count("id"))
+    deal.rating = round(agg["avg"], 2) if agg["avg"] is not None else 0
+    deal.ratings_count = agg["n"] or 0
+    deal.save(update_fields=["rating", "ratings_count"])
+    return deal
 
 
 class RedemptionToken(models.Model):

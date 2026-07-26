@@ -230,6 +230,34 @@ POST /api/deals/favorites/toggle/
 → { "data": { "deal_id": "uuid", "is_favorite": true } }
 ```
 
+### Ratings
+
+Any logged-in user can rate a deal 1-5 stars (one rating per user per deal).
+
+```json
+POST   /api/deals/<deal_id>/rate/     { "rating": 4 }     // set or update
+DELETE /api/deals/<deal_id>/rate/                          // remove your rating
+
+→ { "data": { "deal_id": "uuid", "rating": 3.5, "ratings_count": 2, "my_rating": 4 } }
+```
+
+Every deal object carries `rating` (average, string like `"3.50"`), `ratings_count`,
+and `my_rating` (your own 1-5, or `null` if not logged in / not rated).
+
+### Public browsing (token optional)
+
+`GET /api/categories/`, `/api/deals/`, `/api/deals/featured/`, `/api/deals/nearby/`
+and `/api/deals/<id>/` work **with or without** a token. Anonymous callers get the
+data; logged-in callers additionally get `is_favorite` and `my_rating`.
+
+### Free vs paid (admin-controlled)
+
+The app launches in **free** mode — clients can redeem deals **without any
+subscription**. An admin can switch it to **plans** mode (in the admin panel /
+`PATCH /api/admin/settings/`), after which `generate-code`/`redeem` require an
+ACTIVE subscription (`402` otherwise). Your app doesn't need to special-case
+this — just handle the `402` when it occurs.
+
 ---
 
 ## Offers (business)

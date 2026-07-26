@@ -157,6 +157,11 @@ MESSAGES = {
     "subscription_updated": {"en": "Subscription status updated successfully.", "ar": "تم تحديث حالة الاشتراك بنجاح.", "fr": "Statut d'abonnement mis à jour avec succès."},
     "users_fetched":    {"en": "Users fetched successfully.", "ar": "تم جلب المستخدمين بنجاح.",   "fr": "Utilisateurs récupérés avec succès."},
     "payments_fetched": {"en": "Payments fetched successfully.", "ar": "تم جلب المدفوعات بنجاح.", "fr": "Paiements récupérés avec succès."},
+    "settings_updated": {"en": "Settings updated successfully.", "ar": "تم تحديث الإعدادات بنجاح.", "fr": "Paramètres mis à jour avec succès."},
+
+    # ── Ratings ───────────────────────────────────────────────────────────────
+    "rating_saved":   {"en": "Rating saved.",   "ar": "تم حفظ التقييم.",   "fr": "Note enregistrée."},
+    "rating_removed": {"en": "Rating removed.",  "ar": "تمت إزالة التقييم.", "fr": "Note supprimée."},
 }
 
 

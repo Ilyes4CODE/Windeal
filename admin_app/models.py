@@ -3,6 +3,44 @@ from django.db import models
 import uuid
 
 
+class AppSetting(models.Model):
+    """
+    Global, admin-controlled app configuration. Single row (id=1).
+
+    `subscription_mode`:
+      - "free"  → the whole app is free; clients can redeem deals without any
+                  subscription (this is the launch default).
+      - "plans" → redemption requires an ACTIVE WINDEAL+ subscription.
+    """
+    SUBSCRIPTION_MODES = [
+        ("free",  "Free — everyone can redeem, no subscription needed"),
+        ("plans", "Plans — redemption requires an active subscription"),
+    ]
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    subscription_mode = models.CharField(max_length=10, choices=SUBSCRIPTION_MODES, default="free")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "app_settings"
+
+    def __str__(self):
+        return f"AppSetting (mode={self.subscription_mode})"
+
+    def save(self, *args, **kwargs):
+        self.id = 1                      # enforce singleton
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls):
+        obj, _ = cls.objects.get_or_create(id=1)
+        return obj
+
+    @classmethod
+    def is_free(cls):
+        return cls.load().subscription_mode == "free"
+
+
 class Category(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100, unique=True)

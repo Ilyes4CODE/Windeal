@@ -1,10 +1,15 @@
 # App: deals_app | File: serializers.py
 from decimal import Decimal
 from rest_framework import serializers
-from .models import Deal, Favorite, RedemptionToken, Redemption, Notification
+from .models import Deal, Favorite, RedemptionToken, Redemption, Notification, DealRating
 from admin_app.models import Category, SubscriptionPlan
 from auth_app.models import BusinessProfile
 from auth_app.serializers import split_coords
+
+
+class RateDealSerializer(serializers.Serializer):
+    rating = serializers.IntegerField(min_value=1, max_value=5,
+                help_text="1 to 5 stars.")
 
 
 # ─── Categories (public) ──────────────────────────────────────────────────────
@@ -39,6 +44,7 @@ class DealListSerializer(serializers.ModelSerializer):
     discount_amount  = serializers.CharField(source="discount_value")
     is_favorite      = serializers.SerializerMethodField()
     distance_km      = serializers.SerializerMethodField()
+    my_rating        = serializers.SerializerMethodField()
 
     class Meta:
         model  = Deal
@@ -46,7 +52,7 @@ class DealListSerializer(serializers.ModelSerializer):
             "id",
             "item_name", "item_description", "item_image",
             "category_name",
-            "rating",
+            "rating", "ratings_count", "my_rating",
             "business_name", "location_name",
             "latitude", "longitude",
             "discount_amount", "old_price", "new_price",
@@ -115,6 +121,19 @@ class DealListSerializer(serializers.ModelSerializer):
             return None
         km = distances.get(obj.id)
         return round(km, 2) if km is not None else None
+
+    def get_my_rating(self, obj):
+        """The current user's own rating (1-5), or null if not logged in / not rated."""
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not getattr(user, "is_authenticated", False):
+            return None
+        # Optional perf hint: callers may pre-compute my_rating_map in context.
+        rating_map = self.context.get("my_rating_map")
+        if rating_map is not None:
+            return rating_map.get(obj.id)
+        r = DealRating.objects.filter(user=user, deal=obj).values_list("rating", flat=True).first()
+        return r
 
 
 # ─── Business offers (CRUD) ───────────────────────────────────────────────────

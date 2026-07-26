@@ -2,7 +2,19 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
-from .models import Category, SubscriptionPlan, Payment
+from .models import Category, SubscriptionPlan, Payment, AppSetting
+
+
+@admin.register(AppSetting)
+class AppSettingAdmin(admin.ModelAdmin):
+    list_display = ("__str__", "subscription_mode", "updated_at")
+
+    def has_add_permission(self, request):
+        # Singleton — only ever one row.
+        return not AppSetting.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 # ─── Category Admin ───────────────────────────────────────────────────────────

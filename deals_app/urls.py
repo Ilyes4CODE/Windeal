@@ -13,6 +13,7 @@ urlpatterns = [
     path("deals/favorites/",                  views.list_favorites,         name="list_favorites"),
     path("deals/favorites/toggle/",           views.toggle_favorite,        name="toggle_favorite"),
     path("deals/generate-code/",              views.generate_redemption_code, name="generate_redemption_code"),
+    path("deals/<uuid:deal_id>/rate/",        views.rate_deal,              name="rate_deal"),
     path("deals/<uuid:deal_id>/",             views.deal_detail,            name="deal_detail"),
 
     # ── Business: Offers (CRUD) ──────────────────────────────────────────────

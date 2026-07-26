@@ -11,11 +11,12 @@ from drf_spectacular.utils import (
 from drf_spectacular.types import OpenApiTypes
 import datetime
 
-from .models import Category, SubscriptionPlan, Payment
+from .models import Category, SubscriptionPlan, Payment, AppSetting
 from .serializers import (
     CategorySerializer, SubscriptionPlanSerializer,
     PaymentSerializer, ApprovePaymentSerializer,
     AdminUserListSerializer, AdminSetSubscriptionSerializer,
+    AppSettingSerializer,
 )
 from auth_app.models import User
 from deals_app.models import Deal
@@ -511,3 +512,40 @@ def set_subscription(request, user_id):
         user.subscription_end = None
     user.save(update_fields=["subscription_status", "subscription_end"])
     return _ok(data={"subscription_status": user.subscription_status}, msg_key="subscription_updated", lang=lang)
+
+
+# ─── App settings (free vs plans) ─────────────────────────────────────────────
+
+@extend_schema(
+    tags=["Admin — Settings"],
+    summary="Get / update global app settings",
+    description=(
+        "**GET** — returns the current app settings.\n\n"
+        "**PATCH** — update them. The key setting is `subscription_mode`:\n"
+        "- `free` — the whole app is free; clients redeem deals without any subscription.\n"
+        "- `plans` — redemption requires an **ACTIVE** WINDEAL+ subscription.\n\n"
+        "Defaults to `free` (launch mode). **Requires:** Admin token."
+    ),
+    request=AppSettingSerializer,
+    parameters=[_LANG, _AUTH],
+    responses={200: OpenApiResponse(response=AppSettingSerializer, description="Settings.")},
+    examples=[
+        OpenApiExample("Make the app free",      request_only=True, value={"subscription_mode": "free"}),
+        OpenApiExample("Switch to paid plans",   request_only=True, value={"subscription_mode": "plans"}),
+    ],
+)
+@api_view(["GET", "PATCH"])
+@parser_classes([JSONParser])
+@admin_required
+def app_settings(request):
+    lang = _lang(request)
+    setting = AppSetting.load()
+
+    if request.method == "GET":
+        return _ok(data=AppSettingSerializer(setting).data, lang=lang)
+
+    serializer = AppSettingSerializer(setting, data=request.data, partial=True)
+    if not serializer.is_valid():
+        return _err("validation_error", lang, errors=serializer.errors)
+    serializer.save()
+    return _ok(data=serializer.data, msg_key="settings_updated", lang=lang)

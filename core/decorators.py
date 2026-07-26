@@ -106,6 +106,31 @@ def login_required(view_func):
     return wrapper
 
 
+def login_optional(view_func):
+    """
+    Authentication is OPTIONAL.
+
+    - No token / invalid token  → request.user is set to ``None`` (anonymous);
+      the view still runs (public access).
+    - Valid token               → request.user is the authenticated user, so
+      per-user fields (e.g. ``is_favorite``, ``my_rating``) can be computed.
+    - Banned non-admin with a valid token → 403 (a banned user shouldn't get a
+      personalised response).
+
+    Use for public read endpoints that are richer when logged in but must also
+    work for anonymous callers.
+    """
+    @wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        lang = _get_lang(request)
+        user, _ = _authenticate_request(request)
+        if user is not None and user.role != "admin" and getattr(user, "is_banned", False):
+            return _deny("banned", lang, status.HTTP_403_FORBIDDEN)
+        request.user = user          # may be None → treated as anonymous downstream
+        return view_func(request, *args, **kwargs)
+    return wrapper
+
+
 def admin_or_business_required(view_func):
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):

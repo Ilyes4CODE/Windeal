@@ -1,7 +1,16 @@
 # App: admin_app | File: serializers.py
 from rest_framework import serializers
-from .models import Category, SubscriptionPlan, Payment
+from .models import Category, SubscriptionPlan, Payment, AppSetting
 from auth_app.models import User
+
+
+class AppSettingSerializer(serializers.ModelSerializer):
+    subscription_mode_display = serializers.CharField(source="get_subscription_mode_display", read_only=True)
+
+    class Meta:
+        model  = AppSetting
+        fields = ["subscription_mode", "subscription_mode_display", "updated_at"]
+        read_only_fields = ["subscription_mode_display", "updated_at"]
 
 
 def _e(en, ar, fr):
