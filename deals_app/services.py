@@ -126,6 +126,9 @@ def redeem_token(business_user, qr_token):
     if token.deal.business_id != business_user.id:
         return {**base, "code": "wrong_business",
                 "message": "This deal does not belong to your business.", "http_status": 403}
+    if token.deal.is_blocked or not token.deal.is_active:
+        return {**base, "code": "unavailable",
+                "message": "This deal is no longer available.", "http_status": 400}
     # Subscription is only enforced when the admin has put the app in "plans" mode.
     from admin_app.models import AppSetting
     if not AppSetting.is_free() and token.user.subscription_status != "ACTIVE":

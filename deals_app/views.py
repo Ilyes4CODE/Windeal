@@ -186,7 +186,7 @@ def list_categories(request):
 @login_optional
 def list_deals(request):
     lang = _lang(request)
-    qs = Deal.objects.filter(is_active=True).select_related("category", "business", "business__business_profile")
+    qs = Deal.objects.filter(is_active=True, is_blocked=False).select_related("category", "business", "business__business_profile")
 
     category_id = request.query_params.get("category_id")
     if category_id:
@@ -291,7 +291,7 @@ def list_deals(request):
 def featured_deals(request):
     lang = _lang(request)
     qs = (
-        Deal.objects.filter(is_active=True, is_featured=True)
+        Deal.objects.filter(is_active=True, is_featured=True, is_blocked=False)
             .select_related("category", "business", "business__business_profile")
             .order_by("-rating", "-created_at")
     )
@@ -370,7 +370,7 @@ def nearby_deals(request):
             return _err(message="km must be a number.", lang=lang,
                         http_status=status.HTTP_400_BAD_REQUEST)
 
-    qs = Deal.objects.filter(is_active=True).select_related(
+    qs = Deal.objects.filter(is_active=True, is_blocked=False).select_related(
         "category", "business", "business__business_profile")
     category_id = request.query_params.get("category_id")
     if category_id:
@@ -436,7 +436,7 @@ def nearby_deals(request):
 def deal_detail(request, deal_id):
     lang = _lang(request)
     try:
-        deal = Deal.objects.select_related("category", "business", "business__business_profile").get(id=deal_id, is_active=True)
+        deal = Deal.objects.select_related("category", "business", "business__business_profile").get(id=deal_id, is_active=True, is_blocked=False)
     except Deal.DoesNotExist:
         return _err("not_found", lang, status.HTTP_404_NOT_FOUND)
     data = DealListSerializer(deal, context={"request": request}).data
@@ -469,7 +469,7 @@ def deal_detail(request, deal_id):
 def rate_deal(request, deal_id):
     lang = _lang(request)
     try:
-        deal = Deal.objects.get(id=deal_id, is_active=True)
+        deal = Deal.objects.get(id=deal_id, is_active=True, is_blocked=False)
     except Deal.DoesNotExist:
         return _err("not_found", lang, status.HTTP_404_NOT_FOUND)
 
@@ -558,7 +558,7 @@ def list_favorites(request):
     )
     deals = (
         Deal.objects
-            .filter(id__in=fav_ids, is_active=True)
+            .filter(id__in=fav_ids, is_active=True, is_blocked=False)
             .select_related("category", "business", "business__business_profile")
             .order_by("-created_at")
     )
@@ -609,7 +609,7 @@ def generate_redemption_code(request):
 
     deal_id = serializer.validated_data["deal_id"]
     try:
-        deal = Deal.objects.get(id=deal_id, is_active=True)
+        deal = Deal.objects.get(id=deal_id, is_active=True, is_blocked=False)
     except Deal.DoesNotExist:
         return _err("not_found", lang, status.HTTP_404_NOT_FOUND)
 

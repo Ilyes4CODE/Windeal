@@ -42,6 +42,9 @@ class Deal(models.Model):
     is_active       = models.BooleanField(default=True)
     is_featured     = models.BooleanField(default=False,
                         help_text="Admin-controlled flag. Featured deals appear in the Featured section.")
+    is_blocked      = models.BooleanField(default=False,
+                        help_text="Admin-only block. Blocked deals are hidden from clients and "
+                                  "cannot be redeemed, regardless of the business's is_active.")
 
     created_at      = models.DateTimeField(auto_now_add=True)
     updated_at      = models.DateTimeField(auto_now=True)

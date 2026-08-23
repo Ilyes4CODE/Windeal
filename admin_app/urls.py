@@ -19,6 +19,7 @@ urlpatterns = [
     # ── Deals (featuring control) ──────────────────────────────────────────────
     path("deals/",                               views.deals,             name="admin_deals"),
     path("deals/<uuid:deal_id>/feature/",        views.feature_deal,      name="admin_feature_deal"),
+    path("deals/<uuid:deal_id>/block/",          views.block_deal,        name="admin_block_deal"),
 
     # ── Users ──────────────────────────────────────────────────────────────────
     path("users/",                               views.list_users,        name="admin_list_users"),

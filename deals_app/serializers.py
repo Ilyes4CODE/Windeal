@@ -14,12 +14,25 @@ class RateDealSerializer(serializers.Serializer):
 
 # ─── Categories (public) ──────────────────────────────────────────────────────
 
+def _req_lang(context):
+    request = context.get("request") if context else None
+    if request:
+        raw = request.headers.get("Accept-Language", "en")[:2].lower()
+        return raw if raw in ("en", "ar", "fr") else "en"
+    return "en"
+
+
 class PublicCategorySerializer(serializers.ModelSerializer):
+    name     = serializers.SerializerMethodField()
     icon_url = serializers.SerializerMethodField()
 
     class Meta:
         model  = Category
         fields = ["id", "name", "icon_url"]
+
+    def get_name(self, obj):
+        # Localised to the Accept-Language header (falls back to the default name).
+        return obj.localized_name(_req_lang(self.context))
 
     def get_icon_url(self, obj):
         request = self.context.get("request")
@@ -73,7 +86,7 @@ class DealListSerializer(serializers.ModelSerializer):
         return None
 
     def get_category_name(self, obj):
-        return obj.category.name if obj.category else None
+        return obj.category.localized_name(_req_lang(self.context)) if obj.category else None
 
     def _business_profile(self, obj):
         return getattr(obj.business, "business_profile", None)
@@ -162,11 +175,12 @@ class BusinessOfferSerializer(serializers.ModelSerializer):
             "expiry_date",
             "is_active",
             "is_featured",
+            "is_blocked",
             "created_at", "updated_at",
         ]
-        # discount_value is derived from the prices; is_featured is admin-controlled.
+        # discount_value is derived; is_featured/is_blocked are admin-controlled.
         read_only_fields = ["id", "image_url", "category_name", "discount_value",
-                            "rating", "is_featured", "created_at", "updated_at"]
+                            "rating", "is_featured", "is_blocked", "created_at", "updated_at"]
         extra_kwargs = {
             "image":     {"write_only": True, "required": False, "allow_null": True},
             "category":  {"required": False, "allow_null": True},
@@ -346,7 +360,7 @@ class AdminDealSerializer(serializers.ModelSerializer):
         model  = Deal
         fields = [
             "id", "title", "business_name", "category_name",
-            "rating", "is_featured", "is_active", "created_at",
+            "rating", "is_featured", "is_active", "is_blocked", "created_at",
         ]
         read_only_fields = fields
 
@@ -355,9 +369,14 @@ class AdminDealSerializer(serializers.ModelSerializer):
         return bp.business_name if bp else (obj.business.phone if obj.business else None)
 
     def get_category_name(self, obj):
-        return obj.category.name if obj.category else None
+        return obj.category.localized_name(_req_lang(self.context)) if obj.category else None
 
 
 class FeatureDealSerializer(serializers.Serializer):
     is_featured = serializers.BooleanField(required=False,
         help_text="Explicit value to set. If omitted, the current flag is toggled.")
+
+
+class BlockDealSerializer(serializers.Serializer):
+    is_blocked = serializers.BooleanField(required=False,
+        help_text="Explicit value to set. If omitted, the current block flag is toggled.")

@@ -45,9 +45,14 @@ class CategorySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Category
-        fields = ["id", "name", "photo", "photo_url", "is_active", "created_at", "updated_at"]
+        fields = ["id", "name", "name_ar", "name_fr", "photo", "photo_url",
+                  "is_active", "created_at", "updated_at"]
         read_only_fields = ["id", "photo_url", "created_at", "updated_at"]
-        extra_kwargs = {"photo": {"write_only": True, "required": False}}
+        extra_kwargs = {
+            "photo":   {"write_only": True, "required": False},
+            "name_ar": {"required": False},
+            "name_fr": {"required": False},
+        }
 
     def get_photo_url(self, obj):
         request = self.context.get("request")

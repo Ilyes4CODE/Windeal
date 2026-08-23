@@ -20,7 +20,7 @@ from .serializers import (
 )
 from auth_app.models import User
 from deals_app.models import Deal
-from deals_app.serializers import AdminDealSerializer, FeatureDealSerializer
+from deals_app.serializers import AdminDealSerializer, FeatureDealSerializer, BlockDealSerializer
 from core.messages import get_message
 from core.decorators import admin_required
 from deals_app.services import notify, send_realtime
@@ -473,6 +473,61 @@ def feature_deal(request, deal_id):
     else:
         deal.is_featured = not deal.is_featured
     deal.save(update_fields=["is_featured"])
+    return _ok(data=AdminDealSerializer(deal, context={"request": request}).data, lang=lang)
+
+
+@extend_schema(
+    tags=["Admin — Deals"],
+    summary="Block or unblock a deal",
+    description=(
+        "Blocks or unblocks a deal. A **blocked** deal is hidden from all client "
+        "endpoints (list, featured, nearby, favorites, detail) and cannot be "
+        "redeemed, regardless of the business's own `is_active`.\n\n"
+        "Send `{\"is_blocked\": true}` to set it explicitly, or an empty body to "
+        "toggle the current value.\n\n"
+        "**Requires:** Admin token."
+    ),
+    request=BlockDealSerializer,
+    parameters=[_LANG, _AUTH, OpenApiParameter("deal_id", OpenApiTypes.UUID, OpenApiParameter.PATH)],
+    responses={
+        200: OpenApiResponse(response=AdminDealSerializer, description="Updated."),
+        404: OpenApiResponse(description="Not found."),
+    },
+    examples=[
+        OpenApiExample("Block",   request_only=True, value={"is_blocked": True}),
+        OpenApiExample("Unblock", request_only=True, value={"is_blocked": False}),
+        OpenApiExample("Toggle",  request_only=True, value={}),
+    ],
+)
+@api_view(["PATCH"])
+@parser_classes([JSONParser])
+@admin_required
+def block_deal(request, deal_id):
+    lang = _lang(request)
+    try:
+        deal = Deal.objects.select_related("category", "business", "business__business_profile").get(id=deal_id)
+    except Deal.DoesNotExist:
+        return _err("not_found", lang, status.HTTP_404_NOT_FOUND)
+
+    if "is_blocked" in request.data:
+        deal.is_blocked = str(request.data.get("is_blocked")).lower() in ("1", "true", "yes", "True")
+    else:
+        deal.is_blocked = not deal.is_blocked
+    deal.save(update_fields=["is_blocked"])
+
+    # Notify the business so they know their deal was blocked/unblocked.
+    try:
+        notify(
+            deal.business,
+            title="Deal blocked" if deal.is_blocked else "Deal unblocked",
+            body=(f"Your deal '{deal.title}' has been blocked by an administrator and is "
+                  f"hidden from clients." if deal.is_blocked
+                  else f"Your deal '{deal.title}' has been unblocked and is visible again."),
+            ntype="deal",
+        )
+    except Exception:
+        pass
+
     return _ok(data=AdminDealSerializer(deal, context={"request": request}).data, lang=lang)
 
 

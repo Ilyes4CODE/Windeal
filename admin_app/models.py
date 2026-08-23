@@ -43,7 +43,12 @@ class AppSetting(models.Model):
 
 class Category(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=100, unique=True,
+             help_text="Default / English name.")
+    name_ar = models.CharField(max_length=100, blank=True, default="",
+             help_text="Arabic name (optional).")
+    name_fr = models.CharField(max_length=100, blank=True, default="",
+             help_text="French name (optional).")
     photo = models.ImageField(upload_to="categories/", null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -54,6 +59,14 @@ class Category(models.Model):
         verbose_name_plural = "categories"
 
     def __str__(self):
+        return self.name
+
+    def localized_name(self, lang="en"):
+        """Return the name in the requested language, falling back to the default."""
+        if lang == "ar" and self.name_ar:
+            return self.name_ar
+        if lang == "fr" and self.name_fr:
+            return self.name_fr
         return self.name
 
 
