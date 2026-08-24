@@ -352,15 +352,22 @@ class PaymentHistorySerializer(serializers.ModelSerializer):
 # ─── Admin deal listing / featuring ───────────────────────────────────────────
 
 class AdminDealSerializer(serializers.ModelSerializer):
-    """Compact deal representation for the admin panel (featuring control)."""
-    business_name = serializers.SerializerMethodField()
-    category_name = serializers.SerializerMethodField()
+    """Deal representation for the admin panel (featuring / block control + detail card)."""
+    business_name  = serializers.SerializerMethodField()
+    business_phone = serializers.SerializerMethodField()
+    category_name  = serializers.SerializerMethodField()
+    image_url      = serializers.SerializerMethodField()
+    location_name  = serializers.SerializerMethodField()
 
     class Meta:
         model  = Deal
         fields = [
-            "id", "title", "business_name", "category_name",
-            "rating", "is_featured", "is_active", "is_blocked", "created_at",
+            "id", "title", "description", "image_url",
+            "business_name", "business_phone", "category_name", "location_name",
+            "discount_value", "old_price", "new_price",
+            "rating", "ratings_count",
+            "is_featured", "is_active", "is_blocked",
+            "expiry_date", "created_at",
         ]
         read_only_fields = fields
 
@@ -368,8 +375,29 @@ class AdminDealSerializer(serializers.ModelSerializer):
         bp = getattr(obj.business, "business_profile", None)
         return bp.business_name if bp else (obj.business.phone if obj.business else None)
 
+    def get_business_phone(self, obj):
+        return obj.business.phone if obj.business else None
+
     def get_category_name(self, obj):
         return obj.category.localized_name(_req_lang(self.context)) if obj.category else None
+
+    def get_image_url(self, obj):
+        request = self.context.get("request")
+        if obj.image and request:
+            return request.build_absolute_uri(obj.image.url)
+        if obj.image:
+            return obj.image.url
+        return None
+
+    def get_location_name(self, obj):
+        bp = getattr(obj.business, "business_profile", None)
+        city = obj.business.city if obj.business else None
+        if not bp:
+            return city or None
+        address = bp.address
+        if address and split_coords(address):
+            address = None
+        return address or city or None
 
 
 class FeatureDealSerializer(serializers.Serializer):
