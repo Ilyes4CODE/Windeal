@@ -173,6 +173,28 @@ SIMPLE_JWT = {
 CORS_ALLOW_ALL_ORIGINS = _env_bool("DJANGO_CORS_ALLOW_ALL", True)
 CORS_ALLOWED_ORIGINS = _env_list("DJANGO_CORS_ALLOWED_ORIGINS", "")
 
+# ── Email (OTP delivery) ──────────────────────────────────────────────────────
+# Set EMAIL_HOST (+ user/password) in .env to send real emails via SMTP
+# (SendGrid, Gmail app password, Mailgun, SES…). With no EMAIL_HOST, OTPs are
+# printed to the server log (console backend) so the flow works out of the box.
+EMAIL_HOST          = os.environ.get("EMAIL_HOST", "").strip()
+EMAIL_PORT          = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_USE_TLS       = _env_bool("EMAIL_USE_TLS", True)
+EMAIL_HOST_USER     = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+DEFAULT_FROM_EMAIL  = os.environ.get("DEFAULT_FROM_EMAIL", "WINDEAL <noreply@windeal.company>")
+if EMAIL_HOST:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+else:
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+
+# ── Social sign-in (Google / Apple) ───────────────────────────────────────────
+# Comma-separated allowed audiences (client IDs / bundle IDs) the mobile app uses.
+# Tokens whose `aud` isn't in this list are rejected. Leave empty to disable
+# audience checking in non-production testing only.
+GOOGLE_CLIENT_IDS = _env_list("GOOGLE_CLIENT_IDS", "")
+APPLE_CLIENT_IDS  = _env_list("APPLE_CLIENT_IDS", "")
+
 # ── Production security hardening (only active when DEBUG=False) ───────────────
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")

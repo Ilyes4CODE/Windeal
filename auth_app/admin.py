@@ -3,7 +3,15 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils.html import format_html
 from django.utils import timezone
-from .models import User, ClientProfile, BusinessProfile
+from .models import User, ClientProfile, BusinessProfile, EmailOTP
+
+
+@admin.register(EmailOTP)
+class EmailOTPAdmin(admin.ModelAdmin):
+    list_display  = ("email", "otp", "purpose", "is_used", "created_at")
+    list_filter   = ("purpose", "is_used")
+    search_fields = ("email",)
+    readonly_fields = ("email", "otp", "purpose", "is_used", "created_at")
 
 
 # ─── Inlines ──────────────────────────────────────────────────────────────────

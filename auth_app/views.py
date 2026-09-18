@@ -14,7 +14,10 @@ from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers as drf_serializers
 import datetime
 
-from .models import User, ClientProfile, BusinessProfile
+from django.conf import settings
+from django.core.mail import send_mail
+
+from .models import User, ClientProfile, BusinessProfile, EmailOTP
 from .serializers import (
     ClientRegisterSerializer,
     BusinessRegisterSerializer,
@@ -25,6 +28,7 @@ from .serializers import (
     UpdateBusinessProfileSerializer,
     UploadPaymentSerializer,
 )
+from .social import verify_google, verify_apple, SocialVerifyError
 from admin_app.models import SubscriptionPlan, Payment, Category
 from core.messages import get_message
 from core.decorators import _authenticate_request, admin_required
@@ -111,6 +115,357 @@ def _check_subscription_expiry(user):
             user.save(update_fields=["subscription_status"])
 
 
+def _norm_email(value):
+    return (value or "").strip().lower()
+
+
+def _consume_otp(email, otp, purposes):
+    """
+    Validate a 6-digit OTP for `email` against any of `purposes`. On success the
+    matching record is marked used and True is returned. Otherwise False.
+    """
+    email = _norm_email(email)
+    otp = (otp or "").strip()
+    if not email or not otp:
+        return False
+    rec = (
+        EmailOTP.objects
+        .filter(email=email, otp=otp, purpose__in=purposes, is_used=False)
+        .order_by("-created_at")
+        .first()
+    )
+    if not rec or not rec.is_valid():
+        return False
+    rec.is_used = True
+    rec.save(update_fields=["is_used"])
+    return True
+
+
+def _send_otp_email(email, otp):
+    subject = "Your WINDEAL Verification Code"
+    body = (
+        f"Hello,\n\nYour 6-digit WINDEAL verification code is: {otp}\n\n"
+        f"This code expires in 10 minutes. If you didn't request it, ignore this email.\n\n"
+        f"— The WINDEAL Team"
+    )
+    send_mail(subject, body, settings.DEFAULT_FROM_EMAIL, [email], fail_silently=False)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                       EMAIL OTP AUTHENTICATION                           ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+@extend_schema(
+    tags=["Auth — Email OTP"],
+    summary="Send a 6-digit OTP to an email",
+    description=(
+        "Emails a 6-digit verification code (valid 10 minutes).\n\n"
+        "**`purpose`:** `login` · `register_client` · `register_business`.\n\n"
+        "For `login`, the email must already belong to an account (else `404`); "
+        "for the register purposes, any email may request a code.\n\n"
+        "Rate-limited to 3 codes per email per 10 minutes.\n\n"
+        "**No authentication required.**"
+    ),
+    request=inline_serializer("SendOtpRequest", fields={
+        "email":   drf_serializers.EmailField(),
+        "purpose": drf_serializers.ChoiceField(
+            choices=["login", "register_client", "register_business"], required=False),
+    }),
+    parameters=[_LANG],
+    responses={200: OpenApiResponse(description="Code sent."),
+               404: OpenApiResponse(description="No account with this email (login only).")},
+    examples=[OpenApiExample("Login code", request_only=True,
+              value={"email": "user@example.com", "purpose": "login"})],
+)
+@api_view(["POST"])
+@parser_classes([JSONParser])
+def send_email_otp(request):
+    lang = _lang(request)
+    email = _norm_email(request.data.get("email"))
+    purpose = request.data.get("purpose", "login")
+    if purpose not in ("login", "register_client", "register_business"):
+        purpose = "login"
+
+    if not email or "@" not in email:
+        return _err("email_required", lang, errors={"email": "Valid email is required."})
+
+    if purpose == "login":
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return _err("email_not_found", lang, status.HTTP_404_NOT_FOUND)
+        if user.is_banned:
+            return _err("account_banned", lang, status.HTTP_403_FORBIDDEN)
+        if not user.is_active:
+            return _err("account_inactive", lang, status.HTTP_403_FORBIDDEN)
+    else:
+        # For registration, the email must be free.
+        if User.objects.filter(email=email).exists():
+            return _err("email_exists", lang)
+
+    # Rate limit: max 3 codes / 10 minutes / email.
+    if EmailOTP.recent_count(email, minutes=10) >= 3:
+        return _err("otp_rate_limited", lang, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    otp_obj = EmailOTP.generate_otp(email=email, purpose=purpose)
+    try:
+        _send_otp_email(email, otp_obj.otp)
+    except Exception as exc:
+        return _err("server_error", lang, status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    errors={"mail": str(exc)})
+
+    return _ok(msg_key="otp_sent", lang=lang)
+
+
+@extend_schema(
+    tags=["Auth — Email OTP"],
+    summary="Verify OTP and log in (email)",
+    description=(
+        "Second step of email login. Send the `email` and the 6-digit `otp`. On "
+        "success returns full user data + JWT tokens.\n\n**No authentication required.**"
+    ),
+    request=inline_serializer("VerifyEmailLoginRequest", fields={
+        "email": drf_serializers.EmailField(),
+        "otp":   drf_serializers.CharField(max_length=6),
+    }),
+    parameters=[_LANG],
+    responses={200: OpenApiResponse(description="Login successful."),
+               400: OpenApiResponse(description="Invalid or expired code."),
+               403: OpenApiResponse(description="Banned / inactive.")},
+    examples=[OpenApiExample("Verify", request_only=True,
+              value={"email": "user@example.com", "otp": "123456"})],
+)
+@api_view(["POST"])
+@parser_classes([JSONParser])
+def verify_email_login(request):
+    lang = _lang(request)
+    email = _norm_email(request.data.get("email"))
+    otp = (request.data.get("otp") or "").strip()
+
+    if not email or not otp:
+        return _err("validation_error", lang, errors={"detail": "Email and OTP are required."})
+
+    if not _consume_otp(email, otp, ["login"]):
+        return _err("invalid_otp", lang, status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return _err("email_not_found", lang, status.HTTP_404_NOT_FOUND)
+    if user.is_banned:
+        return _err("account_banned", lang, status.HTTP_403_FORBIDDEN)
+    if not user.is_active:
+        return _err("account_inactive", lang, status.HTTP_403_FORBIDDEN)
+
+    _check_subscription_expiry(user)
+    return _ok(data=_build_user_data(user, request), msg_key="login_success", lang=lang)
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                     SOCIAL SIGN-IN (GOOGLE / APPLE)                      ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+def _social_login_or_needs_completion(request, provider, sub, email, name):
+    """
+    Shared handler after a provider token is verified.
+    - If a user already exists (by provider id, else by email) → link + log in.
+    - Otherwise → return needs_completion so the app collects role + phone.
+    """
+    lang = _lang(request)
+    id_field = "google_id" if provider == "google" else "apple_id"
+    email = _norm_email(email)
+
+    user = User.objects.filter(**{id_field: sub}).first()
+    if user is None and email:
+        user = User.objects.filter(email=email).first()
+
+    if user is not None:
+        if user.is_banned:
+            return _err("account_banned", lang, status.HTTP_403_FORBIDDEN)
+        if not user.is_active:
+            return _err("account_inactive", lang, status.HTTP_403_FORBIDDEN)
+        # Link the provider id if not already set.
+        if getattr(user, id_field) != sub:
+            setattr(user, id_field, sub)
+            user.save(update_fields=[id_field])
+        _check_subscription_expiry(user)
+        return _ok(data=_build_user_data(user, request), msg_key="login_success", lang=lang)
+
+    # New user → the app must complete the profile (role + phone).
+    return _ok(data={
+        "exists": False,
+        "needs_completion": True,
+        "email": email,
+        "name": name,
+        "social_id": sub,
+        "provider": provider,
+    }, lang=lang)
+
+
+@extend_schema(
+    tags=["Auth — Social"],
+    summary="Sign in with Google",
+    description=(
+        "Send the Google **`id_token`** obtained on the device. The backend "
+        "verifies it against Google. If an account exists it returns JWT tokens; "
+        "otherwise it returns `needs_completion: true` with the `social_id` so the "
+        "app can call `/social/complete-profile/`.\n\n**No authentication required.**"
+    ),
+    request=inline_serializer("GoogleAuthRequest", fields={
+        "id_token": drf_serializers.CharField(),
+    }),
+    parameters=[_LANG],
+    responses={200: OpenApiResponse(description="Logged in or needs_completion."),
+               400: OpenApiResponse(description="Invalid token.")},
+)
+@api_view(["POST"])
+@parser_classes([JSONParser])
+def google_auth(request):
+    lang = _lang(request)
+    token = request.data.get("id_token") or request.data.get("token")
+    if not token:
+        return _err("validation_error", lang, errors={"id_token": "id_token is required."})
+    try:
+        info = verify_google(token)
+    except SocialVerifyError:
+        return _err("social_verify_failed", lang, status.HTTP_400_BAD_REQUEST)
+    return _social_login_or_needs_completion(
+        request, "google", info["sub"],
+        info.get("email") or request.data.get("email"),
+        info.get("name") or request.data.get("full_name"),
+    )
+
+
+@extend_schema(
+    tags=["Auth — Social"],
+    summary="Sign in with Apple",
+    description=(
+        "Send the Apple **`identity_token`** (JWT) from the device. Verified "
+        "against Apple's public keys. Same response shape as Google.\n\n"
+        "**No authentication required.**"
+    ),
+    request=inline_serializer("AppleAuthRequest", fields={
+        "identity_token": drf_serializers.CharField(),
+        "full_name":      drf_serializers.CharField(required=False),
+    }),
+    parameters=[_LANG],
+    responses={200: OpenApiResponse(description="Logged in or needs_completion."),
+               400: OpenApiResponse(description="Invalid token.")},
+)
+@api_view(["POST"])
+@parser_classes([JSONParser])
+def apple_auth(request):
+    lang = _lang(request)
+    token = request.data.get("identity_token") or request.data.get("id_token")
+    if not token:
+        return _err("validation_error", lang, errors={"identity_token": "identity_token is required."})
+    try:
+        info = verify_apple(token)
+    except SocialVerifyError:
+        return _err("social_verify_failed", lang, status.HTTP_400_BAD_REQUEST)
+    # Apple only sends the name on first authorization; the app forwards it.
+    return _social_login_or_needs_completion(
+        request, "apple", info["sub"],
+        info.get("email") or request.data.get("email"),
+        request.data.get("full_name"),
+    )
+
+
+@extend_schema(
+    tags=["Auth — Social"],
+    summary="Complete social sign-up (role + phone)",
+    description=(
+        "Called after a social sign-in returned `needs_completion: true`. Creates "
+        "the account with the chosen `role` and collected profile, links the "
+        "`social_id`, and returns JWT tokens.\n\n"
+        "**Client fields:** `full_name`, `wilaya`, `school?`\n\n"
+        "**Business fields:** `business_name`, `city?`, `address?`, `latitude?`, "
+        "`longitude?`, `description?`\n\n**No authentication required.**"
+    ),
+    request=inline_serializer("SocialCompleteRequest", fields={
+        "social_id":     drf_serializers.CharField(),
+        "provider":      drf_serializers.ChoiceField(choices=["google", "apple"]),
+        "role":          drf_serializers.ChoiceField(choices=["client", "business"]),
+        "email":         drf_serializers.EmailField(),
+        "phone":         drf_serializers.CharField(),
+        "full_name":     drf_serializers.CharField(required=False),
+        "wilaya":        drf_serializers.CharField(required=False),
+        "school":        drf_serializers.CharField(required=False),
+        "business_name": drf_serializers.CharField(required=False),
+        "city":          drf_serializers.CharField(required=False),
+        "address":       drf_serializers.CharField(required=False),
+        "latitude":      drf_serializers.DecimalField(max_digits=9, decimal_places=6, required=False),
+        "longitude":     drf_serializers.DecimalField(max_digits=9, decimal_places=6, required=False),
+        "description":   drf_serializers.CharField(required=False),
+    }),
+    parameters=[_LANG],
+    responses={201: OpenApiResponse(description="Account created + tokens."),
+               400: OpenApiResponse(description="Validation error.")},
+)
+@api_view(["POST"])
+@parser_classes([JSONParser])
+def social_complete_profile(request):
+    lang = _lang(request)
+    d = request.data
+    provider  = d.get("provider")
+    social_id = d.get("social_id")
+    role      = d.get("role")
+    email     = _norm_email(d.get("email"))
+    phone     = (d.get("phone") or "").strip()
+
+    if provider not in ("google", "apple"):
+        return _err("validation_error", lang, errors={"provider": "google or apple required."})
+    if not social_id:
+        return _err("validation_error", lang, errors={"social_id": "Required."})
+    if role not in ("client", "business"):
+        return _err("validation_error", lang, errors={"role": "client or business required."})
+    if not phone or not phone.lstrip("+").isdigit():
+        return _err("validation_error", lang, errors={"phone": "Valid phone number required."})
+    if email and User.objects.filter(email=email).exists():
+        return _err("email_exists", lang)
+    if User.objects.filter(phone=phone).exists():
+        return _err("phone_exists", lang)
+
+    id_field = "google_id" if provider == "google" else "apple_id"
+    if User.objects.filter(**{id_field: social_id}).exists():
+        return _err("validation_error", lang, errors={"social_id": "This account already exists."})
+
+    with transaction.atomic():
+        user = User.objects.create_user(
+            phone=phone, role=role, password=None,
+            email=email or None,
+            city=d.get("city") or d.get("wilaya") or "",
+            is_verified=True, is_active=True,
+        )
+        setattr(user, id_field, social_id)
+        user.save(update_fields=[id_field])
+
+        if role == "client":
+            ClientProfile.objects.create(
+                user=user,
+                full_name=d.get("full_name") or "",
+                email=email or None,
+                wilaya=d.get("wilaya") or "",
+                school=d.get("school") or "",
+            )
+        else:
+            category = None
+            if d.get("category_id"):
+                category = Category.objects.filter(id=d["category_id"], is_active=True).first()
+            BusinessProfile.objects.create(
+                user=user,
+                business_name=d.get("business_name") or "",
+                description=d.get("description") or "",
+                category=category,
+                address=d.get("address") or "",
+                latitude=d.get("latitude"),
+                longitude=d.get("longitude"),
+            )
+
+    return _ok(data=_build_user_data(user, request), msg_key="user_created",
+               lang=lang, http_status=status.HTTP_201_CREATED)
+
+
 # ─── Client Registration ──────────────────────────────────────────────────────
 
 @extend_schema(
@@ -149,12 +504,17 @@ def register_client(request):
 
     data  = serializer.validated_data
     phone = data["phone"]
+    email = _norm_email(data["email"])
+
+    if not _consume_otp(email, data["otp"], ["register_client", "login"]):
+        return _err("invalid_otp", lang, status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
         user = User.objects.create_user(
             phone=phone,
             role="client",
             password=None,          # passwordless
+            email=email,
             city=data.get("wilaya", ""),
             is_verified=True,
             is_active=True,
@@ -162,7 +522,7 @@ def register_client(request):
         ClientProfile.objects.create(
             user=user,
             full_name=data["full_name"],
-            email=data.get("email"),
+            email=email,
             wilaya=data["wilaya"],
             school=data.get("school") or "",
         )
@@ -211,6 +571,10 @@ def register_business(request):
 
     data  = serializer.validated_data
     phone = data["phone"]
+    email = _norm_email(data["email"])
+
+    if not _consume_otp(email, data["otp"], ["register_business", "login"]):
+        return _err("invalid_otp", lang, status.HTTP_400_BAD_REQUEST)
 
     category = None
     if data.get("category_id"):
@@ -224,6 +588,7 @@ def register_business(request):
             phone=phone,
             role="business",
             password=None,          # passwordless
+            email=email,
             city=data.get("city", ""),
             is_verified=True,
             is_active=True,

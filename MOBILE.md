@@ -135,6 +135,67 @@ POST /api/auth/logout/
 
 ---
 
+## Email OTP authentication
+
+> ⚠️ **Registration now requires email + OTP.** `register/client` and
+> `register/business` must include a verified `email` and `otp`. The old
+> phone-only registration no longer works.
+
+### Login (existing user)
+```json
+POST /api/auth/email/send-otp/      { "email": "user@example.com", "purpose": "login" }
+→ 200 { "message": "A 6-digit verification code has been sent to your email." }
+// 404 if the email has no account → send them to sign-up
+
+POST /api/auth/email/verify-login/  { "email": "user@example.com", "otp": "123456" }
+→ 200 { "data": { "tokens": {...}, "id", "email", "phone", "role", "profile": {...} } }
+```
+
+### Sign-up (new user)
+```json
+POST /api/auth/email/send-otp/   { "email": "new@example.com", "purpose": "register_client" }
+// then:
+POST /api/auth/register/client/
+{ "email": "new@example.com", "otp": "123456", "phone": "+213555111222",
+  "full_name": "Amine", "wilaya": "Alger", "school": "USTHB" }
+
+POST /api/auth/register/business/
+{ "email": "biz@example.com", "otp": "123456", "phone": "+213555000111",
+  "business_name": "Tech Zone", "city": "Alger", "address": "12 Rue…",
+  "latitude": "36.7525", "longitude": "3.0420", "description": "…" }
+```
+Both return JWT tokens + full user data. Codes expire in **10 min**, are
+**single-use**, and are rate-limited to **3 per email per 10 min** (`429`).
+
+## Social sign-in (Google / Apple)
+
+```json
+POST /api/auth/social/google/   { "id_token": "<google id_token>" }
+POST /api/auth/social/apple/    { "identity_token": "<apple identity_token>" }
+```
+
+Two possible responses:
+- **Existing account** → `200` with `data.tokens` (logged in). Done.
+- **New user** → `200` with:
+  ```json
+  { "data": { "exists": false, "needs_completion": true,
+              "email": "...", "name": "...", "social_id": "...", "provider": "google" } }
+  ```
+  Then collect role + phone and call:
+  ```json
+  POST /api/auth/social/complete-profile/
+  { "provider": "google", "social_id": "<from above>", "role": "client",
+    "email": "user@gmail.com", "phone": "+213555222333",
+    "full_name": "John", "wilaya": "Alger" }
+  // business: role="business", business_name, city, address, latitude, longitude, description
+  ```
+  → `201` with JWT tokens.
+
+> Backend must be configured with your **Google/Apple client IDs** (audiences)
+> and SMTP credentials for OTP email — coordinate those with the backend owner.
+
+---
+
 ## Business location — the rules
 
 | Field | Type | Meaning |

@@ -1,7 +1,10 @@
 # App: auth_app | File: models.py
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.utils import timezone
+from datetime import timedelta
 import uuid
+import secrets
 
 
 class UserManager(BaseUserManager):
@@ -43,9 +46,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     ]
 
     id              = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    phone           = models.CharField(max_length=20, unique=True)
-    email           = models.EmailField(unique=True, null=True, blank=True)
+    phone           = models.CharField(max_length=20, unique=True, null=True, blank=True)
+    email           = models.EmailField(unique=True, null=True, blank=True, db_index=True)
     role            = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    # Social sign-in identifiers (provider "sub" / user id).
+    google_id       = models.CharField(max_length=255, null=True, blank=True, unique=True)
+    apple_id        = models.CharField(max_length=255, null=True, blank=True, unique=True)
     is_verified     = models.BooleanField(default=True)   # client/business are auto-verified on register
     is_active       = models.BooleanField(default=True)
     is_staff        = models.BooleanField(default=False)
@@ -115,3 +121,45 @@ class BusinessProfile(models.Model):
 
     def __str__(self):
         return self.business_name
+
+
+class EmailOTP(models.Model):
+    """
+    One-time 6-digit code emailed to a user for passwordless email login /
+    registration. Valid for 10 minutes and single-use.
+    """
+    PURPOSE_CHOICES = [
+        ("login",             "Login"),
+        ("register_client",   "Register Client"),
+        ("register_business", "Register Business"),
+    ]
+
+    email      = models.EmailField(db_index=True)
+    otp        = models.CharField(max_length=6)
+    purpose    = models.CharField(max_length=30, choices=PURPOSE_CHOICES, default="login")
+    is_used    = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "email_otps"
+        indexes = [models.Index(fields=["email", "otp", "is_used"])]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.email} · {self.purpose} · {'used' if self.is_used else 'active'}"
+
+    def is_valid(self):
+        return (not self.is_used) and (timezone.now() - self.created_at) < timedelta(minutes=10)
+
+    @classmethod
+    def generate_otp(cls, email, purpose="login"):
+        # Invalidate previous unused codes for this email + purpose.
+        cls.objects.filter(email=email, purpose=purpose, is_used=False).update(is_used=True)
+        code = f"{secrets.randbelow(900000) + 100000}"   # cryptographically secure 6 digits
+        return cls.objects.create(email=email, otp=code, purpose=purpose)
+
+    @classmethod
+    def recent_count(cls, email, minutes=10):
+        """How many codes were sent to this email in the last `minutes` (rate-limit)."""
+        since = timezone.now() - timedelta(minutes=minutes)
+        return cls.objects.filter(email=email, created_at__gte=since).count()

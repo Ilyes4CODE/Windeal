@@ -159,6 +159,38 @@ MESSAGES = {
     "payments_fetched": {"en": "Payments fetched successfully.", "ar": "تم جلب المدفوعات بنجاح.", "fr": "Paiements récupérés avec succès."},
     "settings_updated": {"en": "Settings updated successfully.", "ar": "تم تحديث الإعدادات بنجاح.", "fr": "Paramètres mis à jour avec succès."},
 
+    # ── Email OTP & social auth ───────────────────────────────────────────────
+    "otp_sent": {
+        "en": "A 6-digit verification code has been sent to your email.",
+        "ar": "تم إرسال رمز تحقق من 6 أرقام إلى بريدك الإلكتروني.",
+        "fr": "Un code de vérification à 6 chiffres a été envoyé à votre email.",
+    },
+    "invalid_otp": {
+        "en": "Invalid or expired verification code.",
+        "ar": "رمز التحقق غير صالح أو منتهي الصلاحية.",
+        "fr": "Code de vérification invalide ou expiré.",
+    },
+    "otp_rate_limited": {
+        "en": "Too many code requests. Please wait a few minutes and try again.",
+        "ar": "عدد كبير جداً من طلبات الرمز. يرجى الانتظار بضع دقائق والمحاولة مرة أخرى.",
+        "fr": "Trop de demandes de code. Veuillez patienter quelques minutes et réessayer.",
+    },
+    "email_required": {
+        "en": "A valid email address is required.",
+        "ar": "عنوان بريد إلكتروني صالح مطلوب.",
+        "fr": "Une adresse email valide est requise.",
+    },
+    "email_not_found": {
+        "en": "No account found with this email. Please sign up.",
+        "ar": "لا يوجد حساب مرتبط بهذا البريد الإلكتروني. يرجى التسجيل.",
+        "fr": "Aucun compte trouvé avec cet email. Veuillez vous inscrire.",
+    },
+    "social_verify_failed": {
+        "en": "Could not verify the sign-in token. Please try again.",
+        "ar": "تعذر التحقق من رمز تسجيل الدخول. يرجى المحاولة مرة أخرى.",
+        "fr": "Impossible de vérifier le jeton de connexion. Veuillez réessayer.",
+    },
+
     # ── Ratings ───────────────────────────────────────────────────────────────
     "rating_saved":   {"en": "Rating saved.",   "ar": "تم حفظ التقييم.",   "fr": "Note enregistrée."},
     "rating_removed": {"en": "Rating removed.",  "ar": "تمت إزالة التقييم.", "fr": "Note supprimée."},

@@ -139,7 +139,8 @@ class ClientRegisterSerializer(serializers.Serializer):
     """
     phone     = serializers.CharField(max_length=20)
     full_name = serializers.CharField(max_length=200)
-    email     = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
+    email     = serializers.EmailField()
+    otp       = serializers.CharField(max_length=6, help_text="6-digit code sent to the email.")
     wilaya    = serializers.CharField(max_length=100)
     school    = serializers.CharField(max_length=200, required=False, allow_blank=True, allow_null=True)
 
@@ -163,9 +164,10 @@ class ClientRegisterSerializer(serializers.Serializer):
         return value.strip()
 
     def validate_email(self, value):
-        if value and User.objects.filter(email=value).exists():
+        value = (value or "").strip().lower()
+        if User.objects.filter(email=value).exists():
             raise serializers.ValidationError(_err("email_already_exists", self.context))
-        return value or None
+        return value
 
 
 class BusinessRegisterSerializer(serializers.Serializer):
@@ -174,6 +176,8 @@ class BusinessRegisterSerializer(serializers.Serializer):
     """
     phone         = serializers.CharField(max_length=20)
     business_name = serializers.CharField(max_length=200)
+    email         = serializers.EmailField()
+    otp           = serializers.CharField(max_length=6, help_text="6-digit code sent to the email.")
     description   = serializers.CharField(required=False, allow_blank=True)
     category_id   = serializers.UUIDField(required=False, allow_null=True)
     city          = serializers.CharField(max_length=100, required=False, allow_blank=True)
@@ -193,6 +197,12 @@ class BusinessRegisterSerializer(serializers.Serializer):
         if len(value.strip()) < 2:
             raise serializers.ValidationError(_err("business_name_short", self.context))
         return value.strip()
+
+    def validate_email(self, value):
+        value = (value or "").strip().lower()
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError(_err("email_already_exists", self.context))
+        return value
 
     def validate_latitude(self, value):
         if value is not None and not (-90 <= float(value) <= 90):
