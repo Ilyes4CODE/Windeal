@@ -1,3 +1,5 @@
 venv/
 WINDEAL_API_Documentation.pdf
 .env
+__pycache__/
+*.py[cod]

@@ -22,21 +22,53 @@ class SocialVerifyError(Exception):
     """Raised when a provider token cannot be verified."""
 
 
-# Cache one JWKS client per certs URL (each caches keys internally).
+import ssl
+import os
+
+# Cache JWKS clients: key is (url, unverified)
 _jwk_clients = {}
 
 
-def _jwk_client(url):
-    client = _jwk_clients.get(url)
+def _get_ssl_context():
+    """Create an SSL context using system or certifi certificates."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+
+    for ca_path in ("/etc/ssl/cert.pem", "/private/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"):
+        if os.path.exists(ca_path):
+            try:
+                return ssl.create_default_context(cafile=ca_path)
+            except Exception:
+                pass
+
+    if getattr(settings, "DEBUG", False):
+        return ssl._create_unverified_context()
+
+    return ssl.create_default_context()
+
+
+def _jwk_client(url, unverified=False):
+    key = (url, unverified)
+    client = _jwk_clients.get(key)
     if client is None:
-        client = PyJWKClient(url)
-        _jwk_clients[url] = client
+        ctx = ssl._create_unverified_context() if unverified else _get_ssl_context()
+        client = PyJWKClient(url, ssl_context=ctx)
+        _jwk_clients[key] = client
     return client
 
 
 def _decode(token, certs_url, issuers, audiences):
     try:
-        signing_key = _jwk_client(certs_url).get_signing_key_from_jwt(token).key
+        try:
+            signing_key = _jwk_client(certs_url).get_signing_key_from_jwt(token).key
+        except Exception as jwk_err:
+            if "CERTIFICATE_VERIFY_FAILED" in str(jwk_err) and getattr(settings, "DEBUG", False):
+                signing_key = _jwk_client(certs_url, unverified=True).get_signing_key_from_jwt(token).key
+            else:
+                raise
         claims = jwt.decode(
             token,
             signing_key,
@@ -45,7 +77,18 @@ def _decode(token, certs_url, issuers, audiences):
             options={"verify_aud": bool(audiences)},
         )
     except Exception as exc:  # jwt errors, network errors, malformed token…
-        raise SocialVerifyError(f"token verification failed: {exc}")
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("[Social Auth] Verification failed: %s", exc)
+        try:
+            unverified = jwt.decode(token, options={"verify_signature": False})
+            logger.warning(
+                "[Social Auth] Unverified token: aud=%s (configured=%s), iss=%s, email=%s",
+                unverified.get("aud"), audiences, unverified.get("iss"), unverified.get("email"),
+            )
+        except Exception as parse_err:
+            logger.warning("[Social Auth] Token is not a valid JWT (%s). Starts with: %r", parse_err, token[:30] if token else "")
+        raise SocialVerifyError(f"{exc}")
 
     iss = claims.get("iss")
     if isinstance(issuers, (tuple, list)):

@@ -327,8 +327,8 @@ def google_auth(request):
         return _err("validation_error", lang, errors={"id_token": "id_token is required."})
     try:
         info = verify_google(token)
-    except SocialVerifyError:
-        return _err("social_verify_failed", lang, status.HTTP_400_BAD_REQUEST)
+    except SocialVerifyError as exc:
+        return _err("social_verify_failed", lang, status.HTTP_400_BAD_REQUEST, errors={"detail": str(exc)})
     return _social_login_or_needs_completion(
         request, "google", info["sub"],
         info.get("email") or request.data.get("email"),
@@ -361,8 +361,8 @@ def apple_auth(request):
         return _err("validation_error", lang, errors={"identity_token": "identity_token is required."})
     try:
         info = verify_apple(token)
-    except SocialVerifyError:
-        return _err("social_verify_failed", lang, status.HTTP_400_BAD_REQUEST)
+    except SocialVerifyError as exc:
+        return _err("social_verify_failed", lang, status.HTTP_400_BAD_REQUEST, errors={"detail": str(exc)})
     # Apple only sends the name on first authorization; the app forwards it.
     return _social_login_or_needs_completion(
         request, "apple", info["sub"],
